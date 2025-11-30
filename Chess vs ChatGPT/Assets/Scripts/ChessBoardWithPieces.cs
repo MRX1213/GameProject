@@ -52,6 +52,9 @@ public class ChessBoardWithPieces : MonoBehaviour
     private Camera mainCamera;
     private List<Vector2Int> validMoves = new List<Vector2Int>();
     
+    // Store initial piece positions for reset
+    private Dictionary<GameObject, Vector2Int> initialPiecePositions = new Dictionary<GameObject, Vector2Int>();
+    
     // Dictionary mapping square names (e.g., "a1", "b2") to board positions
     private Dictionary<string, Vector2Int> squareNameToPosition = new Dictionary<string, Vector2Int>();
     // Dictionary mapping board positions to sphere GameObjects
@@ -73,12 +76,33 @@ public class ChessBoardWithPieces : MonoBehaviour
 
     void Start()
     {
-        mainCamera = Camera.main;
-        if (mainCamera == null)
-            mainCamera = FindObjectOfType<Camera>();
-        
+        UpdateMainCamera();
         InitializeBoardMap();
         InitializeBoard();
+    }
+    
+    void UpdateMainCamera()
+    {
+        // Find the active main camera
+        mainCamera = Camera.main;
+        if (mainCamera == null)
+        {
+            // Try to find any active camera
+            Camera[] cameras = FindObjectsOfType<Camera>();
+            foreach (Camera cam in cameras)
+            {
+                if (cam.gameObject.activeInHierarchy && cam.enabled)
+                {
+                    mainCamera = cam;
+                    break;
+                }
+            }
+        }
+        
+        if (mainCamera == null)
+        {
+            Debug.LogWarning("No active camera found! Raycasting will not work.");
+        }
     }
 
     void Update()
@@ -196,6 +220,9 @@ public class ChessBoardWithPieces : MonoBehaviour
                 piece.pieceObject = pieceComponent.gameObject;
                 board[boardPos.x, boardPos.y] = piece;
                 
+                // Store initial position for reset
+                initialPiecePositions[pieceComponent.gameObject] = boardPos;
+                
                 // Snap piece to the sphere position
                 SnapPieceToPosition(piece, boardPos);
                 
@@ -212,6 +239,18 @@ public class ChessBoardWithPieces : MonoBehaviour
     {
         // Don't process input if game is over
         if (gameOver)
+        {
+            return;
+        }
+        
+        // Update camera reference in case it changed
+        if (mainCamera == null || !mainCamera.gameObject.activeInHierarchy || !mainCamera.enabled)
+        {
+            UpdateMainCamera();
+        }
+        
+        // Make sure we have a valid camera
+        if (mainCamera == null)
         {
             return;
         }
@@ -235,6 +274,8 @@ public class ChessBoardWithPieces : MonoBehaviour
         {
             Ray ray = mainCamera.ScreenPointToRay(inputPosition);
             RaycastHit[] hits = Physics.RaycastAll(ray, Mathf.Infinity);
+            
+            Debug.Log($"Raycast from camera: {mainCamera.name}, Screen pos: {inputPosition}, Hits: {hits.Length}");
 
             if (hits.Length > 0)
             {
@@ -907,7 +948,7 @@ public class ChessBoardWithPieces : MonoBehaviour
         return false;
     }
 
-    bool IsKingInCheck(PieceColor kingColor)
+    public bool IsKingInCheck(PieceColor kingColor)
     {
         // Find the king
         ChessPiece king = null;
@@ -954,7 +995,7 @@ public class ChessBoardWithPieces : MonoBehaviour
         return false; // No legal moves found
     }
     
-    bool IsCheckmate(PieceColor kingColor)
+    public bool IsCheckmate(PieceColor kingColor)
     {
         // Checkmate occurs when:
         // 1. King is in check
@@ -967,7 +1008,7 @@ public class ChessBoardWithPieces : MonoBehaviour
         return !HasLegalMoves(kingColor);
     }
     
-    bool IsStalemate(PieceColor playerColor)
+    public bool IsStalemate(PieceColor playerColor)
     {
         // Stalemate occurs when:
         // 1. King is NOT in check
@@ -1049,9 +1090,45 @@ public class ChessBoardWithPieces : MonoBehaviour
         selectedPiece = null;
         validMoves.Clear();
         totalMoveCount = 0;
+        enPassantTarget = null;
+        enPassantColor = null;
         ClearHighlights();
-        // Note: You'll need to reset the board state and piece positions manually
-        // or reload the scene/prefab
+        
+        // Clear the board
+        for (int x = 0; x < boardSize; x++)
+        {
+            for (int y = 0; y < boardSize; y++)
+            {
+                board[x, y] = null;
+            }
+        }
+        
+        // Reset all pieces to their initial positions
+        ChessPieceComponent[] allPieces = FindObjectsOfType<ChessPieceComponent>();
+        foreach (var pieceComponent in allPieces)
+        {
+            if (initialPiecePositions.ContainsKey(pieceComponent.gameObject))
+            {
+                Vector2Int initialPos = initialPiecePositions[pieceComponent.gameObject];
+                
+                // Reset piece position
+                ChessPiece piece = new ChessPiece(
+                    pieceComponent.pieceType,
+                    pieceComponent.pieceColor,
+                    initialPos
+                );
+                piece.pieceObject = pieceComponent.gameObject;
+                piece.hasMoved = false; // Reset hasMoved flag
+                board[initialPos.x, initialPos.y] = piece;
+                
+                // Snap piece to initial position
+                SnapPieceToPosition(piece, initialPos);
+                
+                Debug.Log($"Reset {pieceComponent.pieceColor} {pieceComponent.pieceType} to {PositionToSquareName(initialPos)}");
+            }
+        }
+        
+        Debug.Log("Game reset - all pieces returned to initial positions");
     }
     
     // ChatGPT Integration Methods
@@ -1066,13 +1143,24 @@ public class ChessBoardWithPieces : MonoBehaviour
         chatGPTPlayer = player;
     }
     
+    public void UpdateCameraReference()
+    {
+        UpdateMainCamera();
+    }
+    
     public void ExecuteMoveFromNotation(string notation, PieceColor movingColor)
     {
+        Debug.Log($"Executing move from notation: '{notation}' for {movingColor}");
+        
+        // Clean up the notation (remove spaces, newlines, etc.)
+        notation = notation.Trim().Replace(" ", "").Replace("\n", "").Replace("\r", "");
+        
         // Parse algebraic notation (simplified - you may want to enhance this)
         // Format examples: "e2e4", "Nf3", "O-O", "e4"
         
         if (notation.Contains("O-O"))
         {
+            Debug.Log("Parsing castling move");
             // Castling
             int backRank = movingColor == PieceColor.White ? 0 : 7;
             ChessPiece king = GetKing(movingColor);
@@ -1081,6 +1169,11 @@ public class ChessBoardWithPieces : MonoBehaviour
                 Vector2Int targetPos = notation.Contains("O-O-O") ? new Vector2Int(2, backRank) : new Vector2Int(6, backRank);
                 MovePiece(king, targetPos);
                 isWhiteTurn = !isWhiteTurn;
+                Debug.Log($"Castling move executed");
+            }
+            else
+            {
+                Debug.LogError("King not found for castling!");
             }
         }
         else
@@ -1088,19 +1181,47 @@ public class ChessBoardWithPieces : MonoBehaviour
             // Try to parse as "from-to" notation (e.g., "e2e4")
             if (notation.Length >= 4)
             {
-                string from = notation.Substring(0, 2);
-                string to = notation.Substring(2, 2);
+                string from = notation.Substring(0, 2).ToLower();
+                string to = notation.Substring(2, 2).ToLower();
                 Vector2Int fromPos = SquareNameToPosition(from);
                 Vector2Int toPos = SquareNameToPosition(to);
+                
+                Debug.Log($"Parsing move: from {from} ({fromPos}) to {to} ({toPos})");
+                
+                if (!IsValidPosition(fromPos) || !IsValidPosition(toPos))
+                {
+                    Debug.LogError($"Invalid positions: from {fromPos} to {toPos}");
+                    return;
+                }
                 
                 ChessPiece piece = GetPieceAt(fromPos);
                 if (piece != null && piece.color == movingColor)
                 {
+                    Debug.Log($"Found piece: {piece.type} at {fromPos}, moving to {toPos}");
                     MovePiece(piece, toPos);
                     isWhiteTurn = !isWhiteTurn;
+                    Debug.Log($"Move executed, turn changed to: {(isWhiteTurn ? "White" : "Black")}");
+                }
+                else
+                {
+                    Debug.LogError($"No piece found at {fromPos} or piece color mismatch. Piece: {piece}, Expected color: {movingColor}");
                 }
             }
+            else
+            {
+                Debug.LogWarning($"Move notation too short or invalid: '{notation}' (length: {notation.Length})");
+            }
         }
+    }
+    
+    public bool IsWhiteTurn()
+    {
+        return isWhiteTurn;
+    }
+    
+    public void SetTurn(bool whiteTurn)
+    {
+        isWhiteTurn = whiteTurn;
     }
     
     public void MovePieceFreeMode(ChessPiece piece, Vector2Int targetPos)
@@ -1128,6 +1249,28 @@ public class ChessBoardWithPieces : MonoBehaviour
         
         isWhiteTurn = !isWhiteTurn;
         totalMoveCount++;
+    }
+    
+    public bool WouldMoveGetOutOfCheck(ChessPiece piece, Vector2Int targetPos)
+    {
+        // Simulate the move and check if it gets out of check
+        Vector2Int oldPos = piece.position;
+        ChessPiece capturedPiece = GetPieceAt(targetPos);
+        
+        // Temporarily make the move
+        board[oldPos.x, oldPos.y] = null;
+        board[targetPos.x, targetPos.y] = piece;
+        piece.position = targetPos;
+        
+        // Check if still in check
+        bool stillInCheck = IsKingInCheck(piece.color);
+        
+        // Restore the board state
+        piece.position = oldPos;
+        board[oldPos.x, oldPos.y] = piece;
+        board[targetPos.x, targetPos.y] = capturedPiece;
+        
+        return !stillInCheck;
     }
     
     public void SpawnPiece(PieceType type, PieceColor color, Vector2Int position)
@@ -1208,7 +1351,7 @@ public class ChessBoardWithPieces : MonoBehaviour
         return GetValidMoves(piece);
     }
     
-    ChessPiece GetKing(PieceColor color)
+    public ChessPiece GetKing(PieceColor color)
     {
         for (int x = 0; x < boardSize; x++)
         {
@@ -1222,6 +1365,27 @@ public class ChessBoardWithPieces : MonoBehaviour
             }
         }
         return null;
+    }
+    
+    public ChessPiece GetPieceByType(PieceType type, PieceColor color)
+    {
+        for (int x = 0; x < boardSize; x++)
+        {
+            for (int y = 0; y < boardSize; y++)
+            {
+                ChessPiece piece = GetPieceAt(new Vector2Int(x, y));
+                if (piece != null && piece.type == type && piece.color == color)
+                {
+                    return piece;
+                }
+            }
+        }
+        return null;
+    }
+    
+    public bool HasPieceOfType(PieceType type, PieceColor color)
+    {
+        return GetPieceByType(type, color) != null;
     }
     
     string GetMoveNotation(ChessPiece piece, Vector2Int targetPos)
@@ -1274,14 +1438,14 @@ public class ChessBoardWithPieces : MonoBehaviour
         }
     }
 
-    ChessPiece GetPieceAt(Vector2Int position)
+    public ChessPiece GetPieceAt(Vector2Int position)
     {
         if (IsValidPosition(position))
             return board[position.x, position.y];
         return null;
     }
 
-    bool IsValidPosition(Vector2Int position)
+    public bool IsValidPosition(Vector2Int position)
     {
         return position.x >= 0 && position.x < boardSize &&
                position.y >= 0 && position.y < boardSize;
@@ -1306,7 +1470,7 @@ public class ChessBoardWithPieces : MonoBehaviour
         return nearestPos;
     }
 
-    Vector2Int SquareNameToPosition(string squareName)
+    public Vector2Int SquareNameToPosition(string squareName)
     {
         // Convert chess notation (e.g., "a1", "b2", "h8") to Vector2Int
         // Files (columns): a-h map to 0-7
@@ -1327,7 +1491,7 @@ public class ChessBoardWithPieces : MonoBehaviour
         return new Vector2Int(x, y);
     }
 
-    string PositionToSquareName(Vector2Int position)
+    public string PositionToSquareName(Vector2Int position)
     {
         // Convert Vector2Int to chess notation
         char file = (char)('a' + position.x);
