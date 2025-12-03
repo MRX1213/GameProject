@@ -1,6 +1,8 @@
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
+using System.Collections;
+using UnityEngine.SceneManagement;
 
 public class ChessUIManager : MonoBehaviour
 {
@@ -8,6 +10,7 @@ public class ChessUIManager : MonoBehaviour
     public GameObject startMenuPanel;      // First panel: Text, Play, Exit
     public GameObject colorSelectionPanel; // Second panel: Choose Color, White, Black
     public GameObject gameOverPanel;
+    public GameObject promotionPanel;      // Panel for pawn promotion choice
     
     [Header("Start Menu UI")]
     public TextMeshProUGUI startMenuText;
@@ -24,9 +27,17 @@ public class ChessUIManager : MonoBehaviour
     public Button restartButton;
     public Button mainMenuButton;
     
+    [Header("Promotion UI")]
+    public TextMeshProUGUI promotionText;
+    public Button queenButton;
+    public Button rookButton;
+    public Button bishopButton;
+    public Button knightButton;
+    
     [Header("Game References")]
     public ChessBoardWithPieces chessGame;
     public ChatGPTChessPlayer chatGPTPlayer;
+    public GameObject chessBoardPrefab; // Reference to the ChessBoardWithPieces prefab
     
     [Header("Cameras")]
     public Camera menuCamera;   // Camera for menu (active before game starts)
@@ -35,9 +46,19 @@ public class ChessUIManager : MonoBehaviour
     
     private bool gameStarted = false;
     private PieceColor playerColor = PieceColor.White;
+    private System.Action<PieceType> promotionCallback = null; // Callback for promotion choice
+    private static int gamesPlayed = 0; // Counter for number of games played (static to persist across scene reloads)
+    private static bool shouldAutoStart = false; // Flag to auto-start game after scene reload
+    private static PieceColor autoStartColor = PieceColor.White; // Color to use when auto-starting
+    
+    [Header("Scene Settings")]
+    public string chessGameSceneName = "ChessGame"; // Name of the chess game scene
+    public string startingScreenSceneName = "StartingScreen"; // Name of the starting screen scene
     
     void Start()
     {
+        string currentSceneName = SceneManager.GetActiveScene().name;
+        
         // Find cameras by name if not assigned
         if (menuCamera == null)
         {
@@ -60,26 +81,7 @@ public class ChessUIManager : MonoBehaviour
                 blackCamera = blackCamObj.GetComponent<Camera>();
         }
         
-        // Enable menu camera, disable game cameras initially
-        if (menuCamera != null)
-        {
-            menuCamera.gameObject.SetActive(true);
-            menuCamera.tag = "MainCamera";
-        }
-        if (whiteCamera != null)
-            whiteCamera.gameObject.SetActive(false);
-        if (blackCamera != null)
-            blackCamera.gameObject.SetActive(false);
-        
-        // Initialize UI
-        if (startMenuPanel != null)
-            startMenuPanel.SetActive(true);
-        if (colorSelectionPanel != null)
-            colorSelectionPanel.SetActive(false);
-        if (gameOverPanel != null)
-            gameOverPanel.SetActive(false);
-        
-        // Setup button listeners
+        // Setup button listeners (works in both scenes)
         if (playButton != null)
             playButton.onClick.AddListener(ShowColorSelection);
         if (exitButton != null)
@@ -93,9 +95,70 @@ public class ChessUIManager : MonoBehaviour
         if (mainMenuButton != null)
             mainMenuButton.onClick.AddListener(ReturnToMainMenu);
         
+        // Setup promotion button listeners
+        if (queenButton != null)
+            queenButton.onClick.AddListener(() => SelectPromotion(PieceType.Queen));
+        if (rookButton != null)
+            rookButton.onClick.AddListener(() => SelectPromotion(PieceType.Rook));
+        if (bishopButton != null)
+            bishopButton.onClick.AddListener(() => SelectPromotion(PieceType.Bishop));
+        if (knightButton != null)
+            knightButton.onClick.AddListener(() => SelectPromotion(PieceType.Knight));
+        
         // Set default text
         if (colorSelectionText != null)
             colorSelectionText.text = "Choose Your Color";
+        
+        // Check which scene we're in
+        if (currentSceneName == startingScreenSceneName)
+        {
+            // We're in the StartingScreen scene - show menu UI
+            // Enable menu camera, disable game cameras initially
+            if (menuCamera != null)
+            {
+                menuCamera.gameObject.SetActive(true);
+                menuCamera.tag = "MainCamera";
+            }
+            if (whiteCamera != null)
+                whiteCamera.gameObject.SetActive(false);
+            if (blackCamera != null)
+                blackCamera.gameObject.SetActive(false);
+            
+            // Initialize UI for starting screen
+            if (startMenuPanel != null)
+                startMenuPanel.SetActive(true);
+            if (colorSelectionPanel != null)
+                colorSelectionPanel.SetActive(false);
+            if (gameOverPanel != null)
+                gameOverPanel.SetActive(false);
+            if (promotionPanel != null)
+                promotionPanel.SetActive(false);
+        }
+        else if (currentSceneName == chessGameSceneName)
+        {
+            // We're in the ChessGame scene
+            // Reassign references on start in case they're lost
+            ReassignReferences();
+            
+            // Check if we should auto-start the game
+            if (shouldAutoStart)
+            {
+                Debug.Log($"In ChessGame scene, auto-starting with color: {autoStartColor}");
+                InitializeGameInChessScene();
+            }
+            else
+            {
+                // If not auto-starting, hide menu panels (they shouldn't be in this scene anyway)
+                if (startMenuPanel != null)
+                    startMenuPanel.SetActive(false);
+                if (colorSelectionPanel != null)
+                    colorSelectionPanel.SetActive(false);
+                if (gameOverPanel != null)
+                    gameOverPanel.SetActive(false);
+                if (promotionPanel != null)
+                    promotionPanel.SetActive(false);
+            }
+        }
     }
     
     void ShowColorSelection()
@@ -118,6 +181,12 @@ public class ChessUIManager : MonoBehaviour
     
     void Update()
     {
+        // Reassign references if they're lost (can happen after respawn)
+        if (chessGame == null || chatGPTPlayer == null)
+        {
+            ReassignReferences();
+        }
+        
         // Check for game over
         if (gameStarted && chessGame != null && chessGame.IsGameOver())
         {
@@ -128,24 +197,73 @@ public class ChessUIManager : MonoBehaviour
     void StartGame(PieceColor selectedColor)
     {
         playerColor = selectedColor;
+        
+        // Store the color choice for the game scene
+        autoStartColor = selectedColor;
+        shouldAutoStart = true;
+        
+        Debug.Log($"Loading ChessGame scene with player color: {selectedColor}");
+        
+        // Load the ChessGame scene
+        SceneManager.LoadScene(chessGameSceneName);
+    }
+    
+    // This method is called when the ChessGame scene loads
+    public void InitializeGameInChessScene()
+    {
+        if (!shouldAutoStart)
+        {
+            Debug.LogWarning("InitializeGameInChessScene called but shouldAutoStart is false");
+            return;
+        }
+        
+        shouldAutoStart = false; // Reset flag
+        playerColor = autoStartColor;
         gameStarted = true;
+        
+        Debug.Log($"InitializeGameInChessScene: Restored playerColor={playerColor} from autoStartColor={autoStartColor}");
+        
+        // Start coroutine to initialize after everything loads
+        StartCoroutine(InitializeGameCoroutine());
+    }
+    
+    IEnumerator InitializeGameCoroutine()
+    {
+        // Wait for scene to fully load
+        yield return new WaitForEndOfFrame();
+        yield return new WaitForEndOfFrame();
+        
+        // Reassign references after scene load
+        ReassignReferences();
         
         // Switch to the appropriate camera
         SwitchCamera(playerColor);
         
-        // Hide all UI panels
+        // Hide all UI panels (if they exist in this scene)
         if (startMenuPanel != null)
             startMenuPanel.SetActive(false);
         if (colorSelectionPanel != null)
             colorSelectionPanel.SetActive(false);
         if (gameOverPanel != null)
             gameOverPanel.SetActive(false);
+        if (promotionPanel != null)
+            promotionPanel.SetActive(false);
         
-        // Initialize game
+        // Reset the chess board (will check gamesPlayed counter)
+        RespawnChessBoard();
+        
+        // Wait a frame for reset to complete
+        yield return new WaitForEndOfFrame();
+        
+        // Reassign references again after reset
+        ReassignReferences();
+        
+        // Initialize game with the board
         if (chessGame != null)
         {
             chessGame.SetPlayerColor(playerColor);
             chessGame.SetChatGPTPlayer(chatGPTPlayer);
+            chessGame.SetUIManager(this); // Connect UI manager for promotion
             
             // If player is black, set initial turn to white (ChatGPT's turn)
             if (playerColor == PieceColor.Black)
@@ -189,6 +307,7 @@ public class ChessUIManager : MonoBehaviour
             blackCamera.gameObject.SetActive(false);
         
         // Enable the appropriate camera
+        // White player sees from white side, Black player sees from black side
         if (color == PieceColor.White)
         {
             if (whiteCamera != null)
@@ -199,8 +318,12 @@ public class ChessUIManager : MonoBehaviour
                 if (blackCamera != null)
                     blackCamera.tag = "Untagged";
             }
+            else
+            {
+                Debug.LogWarning("White camera not found! Player is White but whiteCamera is null.");
+            }
         }
-        else
+        else // color == PieceColor.Black
         {
             if (blackCamera != null)
             {
@@ -210,7 +333,13 @@ public class ChessUIManager : MonoBehaviour
                 if (whiteCamera != null)
                     whiteCamera.tag = "Untagged";
             }
+            else
+            {
+                Debug.LogWarning("Black camera not found! Player is Black but blackCamera is null.");
+            }
         }
+        
+        Debug.Log($"Switched camera for {color} player. White camera active: {whiteCamera != null && whiteCamera.gameObject.activeSelf}, Black camera active: {blackCamera != null && blackCamera.gameObject.activeSelf}");
     }
     
     void ShowGameOver()
@@ -227,48 +356,141 @@ public class ChessUIManager : MonoBehaviour
     
     void RestartGame()
     {
-        // Reset game state
-        gameStarted = false;
+        // Reset game counter and flags
+        gamesPlayed = 0;
+        shouldAutoStart = false;
         
-        // Disable game cameras, enable menu camera
-        if (whiteCamera != null)
-        {
-            whiteCamera.gameObject.SetActive(false);
-            whiteCamera.tag = "Untagged";
-        }
-        if (blackCamera != null)
-        {
-            blackCamera.gameObject.SetActive(false);
-            blackCamera.tag = "Untagged";
-        }
-        if (menuCamera != null)
-        {
-            menuCamera.gameObject.SetActive(true);
-            menuCamera.tag = "MainCamera";
-        }
+        Debug.Log("RestartGame: Returning to StartingScreen scene for color selection");
         
-        if (gameOverPanel != null)
-            gameOverPanel.SetActive(false);
-        if (colorSelectionPanel != null)
-            colorSelectionPanel.SetActive(false);
-        if (startMenuPanel != null)
-            startMenuPanel.SetActive(true);
+        // Load the StartingScreen scene to allow color selection again
+        SceneManager.LoadScene(startingScreenSceneName);
+    }
+    
+    IEnumerator ReassignReferencesAfterRespawn()
+    {
+        // Wait a frame for respawn to complete
+        yield return new WaitForEndOfFrame();
+        ReassignReferences();
+    }
+    
+    public void ShowPromotionPanel(PieceColor pawnColor, System.Action<PieceType> callback)
+    {
+        promotionCallback = callback;
         
-        // Reset chess game
-        if (chessGame != null)
+        // Hide promotion text (leave it empty)
+        if (promotionText != null)
         {
-            chessGame.ResetGame();
+            promotionText.text = "";
         }
         
-        if (chatGPTPlayer != null)
+        // Show the panel
+        if (promotionPanel != null)
         {
-            chatGPTPlayer.Reset();
+            promotionPanel.SetActive(true);
+        }
+        
+        Debug.Log($"Showing promotion panel for {pawnColor} pawn");
+    }
+    
+    void SelectPromotion(PieceType promotionType)
+    {
+        Debug.Log($"Player selected promotion to {promotionType}");
+        
+        // Hide the panel
+        if (promotionPanel != null)
+        {
+            promotionPanel.SetActive(false);
+        }
+        
+        // Call the callback if it exists
+        if (promotionCallback != null)
+        {
+            promotionCallback(promotionType);
+            promotionCallback = null;
+        }
+    }
+    
+    void RespawnChessBoard()
+    {
+        // If this is the first game (gamesPlayed == 0), don't reload scene, just reset
+        if (gamesPlayed == 0)
+        {
+            Debug.Log("First game - using ResetGame() without reloading scene.");
+            if (chessGame != null && chessGame.gameObject != null)
+            {
+                chessGame.ResetGame();
+            }
+            else
+            {
+                // Try to find the board in the scene
+                chessGame = FindObjectOfType<ChessBoardWithPieces>();
+                if (chessGame != null)
+                {
+                    chessGame.ResetGame();
+                }
+            }
+            return;
+        }
+        
+        // For games after the first one, reload the scene to reset everything
+        Debug.Log($"Games played: {gamesPlayed} - Reloading scene to reset board and pieces");
+        ReloadScene();
+    }
+    
+    void ReloadScene()
+    {
+        // Reload the current scene to reset everything
+        SceneManager.LoadScene(SceneManager.GetActiveScene().name);
+    }
+    
+    // Method to find and reassign references if they're lost
+    void ReassignReferences()
+    {
+        // Find chess game if reference is lost
+        if (chessGame == null)
+        {
+            chessGame = FindObjectOfType<ChessBoardWithPieces>();
+            if (chessGame != null)
+            {
+                Debug.Log("Reassigned chessGame reference from scene");
+            }
+            else
+            {
+                Debug.LogWarning("Could not find ChessBoardWithPieces in scene to reassign reference");
+            }
+        }
+        
+        // Find ChatGPT player if reference is lost
+        if (chatGPTPlayer == null)
+        {
+            chatGPTPlayer = FindObjectOfType<ChatGPTChessPlayer>();
+            if (chatGPTPlayer != null)
+            {
+                Debug.Log("Reassigned chatGPTPlayer reference from scene");
+            }
+        }
+        
+        // Try to preserve prefab reference - if it's null, try to find it
+        if (chessBoardPrefab == null)
+        {
+            // Try to load from Resources
+            chessBoardPrefab = Resources.Load<GameObject>("ChessBoardWithPieces");
+            if (chessBoardPrefab != null)
+            {
+                Debug.Log("Reassigned chessBoardPrefab from Resources");
+            }
         }
     }
     
     void ReturnToMainMenu()
     {
-        RestartGame();
+        // Reset game counter and flags
+        gamesPlayed = 0;
+        shouldAutoStart = false;
+        
+        // Load the StartingScreen scene
+        Debug.Log("Returning to StartingScreen scene");
+        SceneManager.LoadScene(startingScreenSceneName);
     }
     
     public bool IsGameStarted()

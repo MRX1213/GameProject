@@ -39,7 +39,8 @@ public class ChatGPTResponse
 public class ChatGPTChessPlayer : MonoBehaviour
 {
     [Header("API Settings")]
-    public string apiKey = "KEY_WILL_BE_HERE";
+    [Tooltip("Enter your OpenAI API key here. Get it from https://platform.openai.com/account/api-keys")]
+    public string apiKey = "";
     public string apiUrl = "https://api.openai.com/v1/chat/completions";
     
     [Header("Game References")]
@@ -361,13 +362,48 @@ public class ChatGPTChessPlayer : MonoBehaviour
         
         // Parse the move notation to get piece type and target position
         string cleanMove = moveNotation.Trim().Replace(" ", "").Replace("\n", "").Replace("\r", "").ToUpper();
+        Debug.Log($"ChatGPT: Parsing move '{moveNotation}' -> cleaned: '{cleanMove}'");
+        
+        // Remove check/checkmate symbols and other annotations
+        cleanMove = cleanMove.Replace("+", "").Replace("#", "").Replace("!", "").Replace("?", "");
         
         Vector2Int? toPos = null;
         PieceType? pieceType = null;
+        PieceType? promotionType = null; // For pawn promotion
         ChessPiece pieceToMove = null;
         
-        // Try to parse standard chess notation (e.g., "Qh8", "Nf3", "Bxe5")
-        if (cleanMove.Length >= 2 && cleanMove.Length <= 5)
+        // Check for promotion notation (e.g., "e7e8Q", "e7e8=Q", "e8Q")
+        if (cleanMove.Contains("="))
+        {
+            int equalsIndex = cleanMove.IndexOf("=");
+            if (equalsIndex + 1 < cleanMove.Length)
+            {
+                char promoChar = cleanMove[equalsIndex + 1];
+                if (promoChar == 'Q') promotionType = PieceType.Queen;
+                else if (promoChar == 'R') promotionType = PieceType.Rook;
+                else if (promoChar == 'B') promotionType = PieceType.Bishop;
+                else if (promoChar == 'N') promotionType = PieceType.Knight;
+                cleanMove = cleanMove.Substring(0, equalsIndex); // Remove promotion part
+            }
+        }
+        else if (cleanMove.Length >= 5 && char.IsLetter(cleanMove[cleanMove.Length - 1]) && 
+                 char.IsUpper(cleanMove[cleanMove.Length - 1]) && 
+                 char.IsDigit(cleanMove[cleanMove.Length - 2]))
+        {
+            // Check if last character is a promotion piece (Q, R, B, N) after a square
+            char lastChar = cleanMove[cleanMove.Length - 1];
+            if (lastChar == 'Q' || lastChar == 'R' || lastChar == 'B' || lastChar == 'N')
+            {
+                if (lastChar == 'Q') promotionType = PieceType.Queen;
+                else if (lastChar == 'R') promotionType = PieceType.Rook;
+                else if (lastChar == 'B') promotionType = PieceType.Bishop;
+                else if (lastChar == 'N') promotionType = PieceType.Knight;
+                cleanMove = cleanMove.Substring(0, cleanMove.Length - 1); // Remove promotion character
+            }
+        }
+        
+        // Try to parse standard chess notation (e.g., "Qh8", "Nf3", "Bxe5", "exd5")
+        if (cleanMove.Length >= 2 && cleanMove.Length <= 6)
         {
             char firstChar = cleanMove[0];
             
@@ -398,13 +434,46 @@ public class ChatGPTChessPlayer : MonoBehaviour
                 pieceType = PieceType.Pawn;
             }
             
-            // Extract target square (last 2 characters)
-            string targetSquare = cleanMove.Substring(cleanMove.Length - 2).ToLower();
-            Vector2Int toPosTemp = chessGame.SquareNameToPosition(targetSquare);
-            
-            if (toPosTemp.x >= 0 && toPosTemp.y >= 0 && chessGame.IsValidPosition(toPosTemp))
+            // Extract target square - find the last 2 characters that form a valid square (a-h, 1-8)
+            // Look for pattern: letter followed by digit at the end
+            string targetSquare = null;
+            for (int i = cleanMove.Length - 2; i >= 0; i--)
             {
-                toPos = toPosTemp;
+                if (i + 1 < cleanMove.Length)
+                {
+                    char file = cleanMove[i];
+                    char rank = cleanMove[i + 1];
+                    if (file >= 'A' && file <= 'H' && rank >= '1' && rank <= '8')
+                    {
+                        targetSquare = cleanMove.Substring(i, 2).ToLower();
+                        break;
+                    }
+                }
+            }
+            
+            // Fallback: try last 2 characters
+            if (targetSquare == null && cleanMove.Length >= 2)
+            {
+                targetSquare = cleanMove.Substring(cleanMove.Length - 2).ToLower();
+            }
+            
+            if (targetSquare != null)
+            {
+                Vector2Int toPosTemp = chessGame.SquareNameToPosition(targetSquare);
+                
+                if (toPosTemp.x >= 0 && toPosTemp.y >= 0 && chessGame.IsValidPosition(toPosTemp))
+                {
+                    toPos = toPosTemp;
+                    Debug.Log($"ChatGPT: Parsed standard notation - Piece: {pieceType}, Target: {targetSquare} ({toPosTemp})");
+                }
+                else
+                {
+                    Debug.LogWarning($"ChatGPT: Invalid target square '{targetSquare}' parsed from '{cleanMove}'");
+                }
+            }
+            else
+            {
+                Debug.LogWarning($"ChatGPT: Could not extract target square from '{cleanMove}'");
             }
         }
         
@@ -421,6 +490,7 @@ public class ChatGPTChessPlayer : MonoBehaviour
             {
                 toPos = toPosTemp;
                 pieceToMove = chessGame.GetPieceAt(fromPosTemp);
+                Debug.Log($"ChatGPT: Parsed from-to notation - From: {from} ({fromPosTemp}), To: {to} ({toPosTemp}), Found piece: {(pieceToMove != null ? pieceToMove.type.ToString() : "null")}");
                 
                 // If piece exists but is not ChatGPT's, reject the move
                 if (pieceToMove != null && pieceToMove.color != chatGPTColor)
@@ -429,18 +499,64 @@ public class ChatGPTChessPlayer : MonoBehaviour
                     pieceToMove = null; // Clear it so we can try to find/spawn ChatGPT's piece
                 }
                 
-                // If no piece at source, spawn a pawn there
+                // If no piece at source, check if we should spawn at target instead
                 if (pieceToMove == null)
                 {
-                    Debug.Log($"ChatGPT: No piece at {from}. Spawning pawn at {from} to move to {to}");
-                    chessGame.SpawnPiece(PieceType.Pawn, chatGPTColor, fromPosTemp);
-                    pieceToMove = chessGame.GetPieceAt(fromPosTemp);
+                    // Determine piece type from the move (if not already determined)
+                    PieceType? requestedPieceType = pieceType;
+                    if (!requestedPieceType.HasValue)
+                    {
+                        // Default to pawn for from-to notation if not specified
+                        requestedPieceType = PieceType.Pawn;
+                    }
+                    
+                    // Check if this piece type exists on the board for ChatGPT
+                    bool pieceTypeExists = chessGame.HasPieceOfType(requestedPieceType.Value, chatGPTColor);
+                    
+                    // Check if there's a piece of this type at the source square
+                    ChessPiece pieceAtSource = chessGame.GetPieceAt(fromPosTemp);
+                    bool pieceAtSourceSquare = (pieceAtSource != null && pieceAtSource.type == requestedPieceType.Value && pieceAtSource.color == chatGPTColor);
+                    
+                    // If the piece type doesn't exist on the board AND it's not at the source square, spawn at target
+                    if (!pieceTypeExists && !pieceAtSourceSquare)
+                    {
+                        Debug.Log($"ChatGPT: No {requestedPieceType.Value} at {from} and no {requestedPieceType.Value} on board. Spawning {requestedPieceType.Value} at target {to}");
+                        chessGame.SpawnPiece(requestedPieceType.Value, chatGPTColor, toPosTemp);
+                        pieceToMove = chessGame.GetPieceAt(toPosTemp);
+                        
+                        // Piece is already at target, so we're done (just spawned it there)
+                        // Check for checkmate/stalemate
+                        if (chessGame.IsCheckmate(chatGPTColor))
+                        {
+                            Debug.Log($"ChatGPT is checkmated after spawning piece!");
+                        }
+                        else if (chessGame.IsStalemate(chatGPTColor))
+                        {
+                            Debug.Log($"ChatGPT is stalemated after spawning piece!");
+                        }
+                        
+                        // Add ChatGPT's move to history
+                        moveHistory.Add(moveNotation);
+                        moveCount++;
+                        return pieceToMove != null;
+                    }
+                    else
+                    {
+                        // Piece type exists on board or is at source, spawn at source as before
+                        Debug.Log($"ChatGPT: No piece at {from}, but {requestedPieceType.Value} exists on board. Spawning {requestedPieceType.Value} at {from} to move to {to}");
+                        chessGame.SpawnPiece(requestedPieceType.Value, chatGPTColor, fromPosTemp);
+                        pieceToMove = chessGame.GetPieceAt(fromPosTemp);
+                    }
                 }
                 
                 if (pieceToMove != null)
                 {
                     pieceType = pieceToMove.type;
                 }
+            }
+            else
+            {
+                Debug.LogWarning($"ChatGPT: Invalid from-to positions - From: {from}, To: {to}");
             }
         }
         
@@ -553,9 +669,30 @@ public class ChatGPTChessPlayer : MonoBehaviour
             return false;
         }
         
-        // If in check, validate that this move gets out of check
-        if (inCheck)
+        // CRITICAL: Cannot move king into check (king cannot be sacrificed)
+        if (pieceToMove.type == PieceType.King)
         {
+            // Simulate the move to check if king would be in check after
+            if (chessGame.WouldMovePutKingInCheck(pieceToMove, toPos.Value, chatGPTColor))
+            {
+                Debug.LogWarning($"ChatGPT: Cannot move king into check! Move '{moveNotation}' rejected.");
+                return false;
+            }
+        }
+        
+        // CRITICAL: Cannot make a move that would leave own king in check (unless already in check and this gets out)
+        if (!inCheck)
+        {
+            // If not in check, make sure this move doesn't put us in check
+            if (chessGame.WouldMovePutKingInCheck(pieceToMove, toPos.Value, chatGPTColor))
+            {
+                Debug.LogWarning($"ChatGPT: Move '{moveNotation}' would leave own king in check. Move rejected.");
+                return false;
+            }
+        }
+        else
+        {
+            // If in check, validate that this move gets out of check
             if (!chessGame.WouldMoveGetOutOfCheck(pieceToMove, toPos.Value))
             {
                 Debug.LogWarning($"ChatGPT: Move '{moveNotation}' does not get out of check. Move rejected.");
@@ -576,6 +713,32 @@ public class ChatGPTChessPlayer : MonoBehaviour
             // Execute using normal move (follows chess rules)
             Debug.Log($"ChatGPT: Moving {pieceToMove.color} {pieceToMove.type} from {chessGame.PositionToSquareName(pieceToMove.position)} to {chessGame.PositionToSquareName(toPos.Value)} (NORMAL MODE)");
             chessGame.MovePiece(pieceToMove, toPos.Value);
+            
+            // Handle promotion - MovePiece already promotes ChatGPT pawns to Queen automatically
+            // If ChatGPT specified a different type in notation, override the Queen promotion
+            // Check if piece was just promoted (is now Queen) and if a different type was specified
+            bool onBackRank = (pieceToMove.color == PieceColor.White && pieceToMove.position.y == 7) ||
+                              (pieceToMove.color == PieceColor.Black && pieceToMove.position.y == 0);
+            
+            if (onBackRank && pieceToMove.type == PieceType.Queen && promotionType.HasValue && promotionType.Value != PieceType.Queen)
+            {
+                // Piece was just promoted to Queen, but ChatGPT specified a different type - override it
+                Debug.Log($"ChatGPT pawn reached back rank - overriding Queen promotion with {promotionType.Value}");
+                chessGame.PromotePawnTo(pieceToMove, promotionType.Value);
+            }
+            else if (onBackRank && pieceToMove.type == PieceType.Pawn)
+            {
+                // Pawn reached back rank but wasn't promoted yet - promote to Queen (or specified type)
+                PieceType finalType = promotionType.HasValue ? promotionType.Value : PieceType.Queen;
+                Debug.Log($"ChatGPT pawn reached back rank - promoting to {finalType}");
+                chessGame.PromotePawnTo(pieceToMove, finalType);
+            }
+            else if (onBackRank)
+            {
+                // Already promoted to Queen by MovePiece (default behavior)
+                Debug.Log($"ChatGPT pawn reached back rank - automatically promoted to Queen");
+            }
+            
             chessGame.SetTurn(!chessGame.IsWhiteTurn());
         }
         else
@@ -583,6 +746,30 @@ public class ChatGPTChessPlayer : MonoBehaviour
             // Execute using free mode (can break rules, but still can't capture own king)
             Debug.Log($"ChatGPT: Moving {pieceToMove.color} {pieceToMove.type} from {chessGame.PositionToSquareName(pieceToMove.position)} to {chessGame.PositionToSquareName(toPos.Value)} (NUTS MODE)");
             chessGame.MovePieceFreeMode(pieceToMove, toPos.Value);
+            
+            // Handle promotion - MovePieceFreeMode already promotes to Queen by default
+            // If ChatGPT specified a different type in notation, override it
+            bool onBackRank = (pieceToMove.color == PieceColor.White && pieceToMove.position.y == 7) ||
+                              (pieceToMove.color == PieceColor.Black && pieceToMove.position.y == 0);
+            
+            if (onBackRank && pieceToMove.type == PieceType.Queen && promotionType.HasValue && promotionType.Value != PieceType.Queen)
+            {
+                // Piece was just promoted to Queen, but ChatGPT specified a different type - override it
+                Debug.Log($"ChatGPT pawn reached back rank - overriding Queen promotion with {promotionType.Value}");
+                chessGame.PromotePawnTo(pieceToMove, promotionType.Value);
+            }
+            else if (onBackRank && pieceToMove.type == PieceType.Pawn)
+            {
+                // Pawn reached back rank but wasn't promoted yet - promote to Queen (or specified type)
+                PieceType finalType = promotionType.HasValue ? promotionType.Value : PieceType.Queen;
+                Debug.Log($"ChatGPT pawn reached back rank - promoting to {finalType}");
+                chessGame.PromotePawnTo(pieceToMove, finalType);
+            }
+            else if (onBackRank)
+            {
+                // Already promoted to Queen by MovePieceFreeMode (default behavior)
+                Debug.Log($"ChatGPT pawn reached back rank - automatically promoted to Queen");
+            }
         }
         
         // Add ChatGPT's move to history

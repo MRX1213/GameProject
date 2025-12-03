@@ -55,6 +55,22 @@ public class ChessBoardWithPieces : MonoBehaviour
     // Store initial piece positions for reset
     private Dictionary<GameObject, Vector2Int> initialPiecePositions = new Dictionary<GameObject, Vector2Int>();
     
+    // Store standard starting positions for all pieces
+    private Dictionary<Vector2Int, PieceInfo> standardStartingPositions = new Dictionary<Vector2Int, PieceInfo>();
+    
+    [System.Serializable]
+    private struct PieceInfo
+    {
+        public PieceType type;
+        public PieceColor color;
+        
+        public PieceInfo(PieceType t, PieceColor c)
+        {
+            type = t;
+            color = c;
+        }
+    }
+    
     // Dictionary mapping square names (e.g., "a1", "b2") to board positions
     private Dictionary<string, Vector2Int> squareNameToPosition = new Dictionary<string, Vector2Int>();
     // Dictionary mapping board positions to sphere GameObjects
@@ -71,7 +87,12 @@ public class ChessBoardWithPieces : MonoBehaviour
     private bool gameOver = false;
     private string gameOverMessage = "";
     private PieceColor playerColor = PieceColor.White; // Human player's color
+    
+    // Promotion state
+    private ChessPiece pendingPromotionPawn = null; // Pawn waiting for promotion choice
+    private System.Action<PieceType> onPromotionSelected = null; // Callback for promotion choice
     private ChatGPTChessPlayer chatGPTPlayer = null; // Reference to ChatGPT player
+    private ChessUIManager chessUIManager = null; // Reference to UI manager
     private int totalMoveCount = 0; // Track total moves for free mode
 
     void Start()
@@ -79,6 +100,44 @@ public class ChessBoardWithPieces : MonoBehaviour
         UpdateMainCamera();
         InitializeBoardMap();
         InitializeBoard();
+        InitializeStandardStartingPositions();
+    }
+    
+    void InitializeStandardStartingPositions()
+    {
+        // White pieces (back rank - rank 1, y=0)
+        standardStartingPositions[new Vector2Int(0, 0)] = new PieceInfo(PieceType.Rook, PieceColor.White);
+        standardStartingPositions[new Vector2Int(1, 0)] = new PieceInfo(PieceType.Knight, PieceColor.White);
+        standardStartingPositions[new Vector2Int(2, 0)] = new PieceInfo(PieceType.Bishop, PieceColor.White);
+        standardStartingPositions[new Vector2Int(3, 0)] = new PieceInfo(PieceType.Queen, PieceColor.White);
+        standardStartingPositions[new Vector2Int(4, 0)] = new PieceInfo(PieceType.King, PieceColor.White);
+        standardStartingPositions[new Vector2Int(5, 0)] = new PieceInfo(PieceType.Bishop, PieceColor.White);
+        standardStartingPositions[new Vector2Int(6, 0)] = new PieceInfo(PieceType.Knight, PieceColor.White);
+        standardStartingPositions[new Vector2Int(7, 0)] = new PieceInfo(PieceType.Rook, PieceColor.White);
+        
+        // White pawns (rank 2, y=1)
+        for (int x = 0; x < 8; x++)
+        {
+            standardStartingPositions[new Vector2Int(x, 1)] = new PieceInfo(PieceType.Pawn, PieceColor.White);
+        }
+        
+        // Black pawns (rank 7, y=6)
+        for (int x = 0; x < 8; x++)
+        {
+            standardStartingPositions[new Vector2Int(x, 6)] = new PieceInfo(PieceType.Pawn, PieceColor.Black);
+        }
+        
+        // Black pieces (back rank - rank 8, y=7)
+        standardStartingPositions[new Vector2Int(0, 7)] = new PieceInfo(PieceType.Rook, PieceColor.Black);
+        standardStartingPositions[new Vector2Int(1, 7)] = new PieceInfo(PieceType.Knight, PieceColor.Black);
+        standardStartingPositions[new Vector2Int(2, 7)] = new PieceInfo(PieceType.Bishop, PieceColor.Black);
+        standardStartingPositions[new Vector2Int(3, 7)] = new PieceInfo(PieceType.Queen, PieceColor.Black);
+        standardStartingPositions[new Vector2Int(4, 7)] = new PieceInfo(PieceType.King, PieceColor.Black);
+        standardStartingPositions[new Vector2Int(5, 7)] = new PieceInfo(PieceType.Bishop, PieceColor.Black);
+        standardStartingPositions[new Vector2Int(6, 7)] = new PieceInfo(PieceType.Knight, PieceColor.Black);
+        standardStartingPositions[new Vector2Int(7, 7)] = new PieceInfo(PieceType.Rook, PieceColor.Black);
+        
+        Debug.Log($"Initialized {standardStartingPositions.Count} standard starting positions");
     }
     
     void UpdateMainCamera()
@@ -496,8 +555,233 @@ public class ChessBoardWithPieces : MonoBehaviour
         board[targetPos.x, targetPos.y] = piece;
         piece.hasMoved = true;
 
+        // Check for pawn promotion
+        // Note: For ChatGPT pawns, we promote to Queen by default here, but ChatGPTChessPlayer
+        // can override with a different type if specified in the move notation.
+        if (piece.type == PieceType.Pawn)
+        {
+            // White pawns promote on rank 8 (y = 7), black pawns promote on rank 1 (y = 0)
+            if ((piece.color == PieceColor.White && targetPos.y == 7) ||
+                (piece.color == PieceColor.Black && targetPos.y == 0))
+            {
+                // If it's the player's pawn, request promotion choice from UI
+                if (piece.color == playerColor && chessUIManager != null)
+                {
+                    pendingPromotionPawn = piece;
+                    chessUIManager.ShowPromotionPanel(piece.color, (promotionType) => {
+                        PromotePawn(piece, promotionType);
+                        pendingPromotionPawn = null;
+                    });
+                }
+                else
+                {
+                    // For ChatGPT or if no UI manager, default to Queen
+                    // ChatGPTChessPlayer can override this if a different type was specified in notation
+                    PromotePawn(piece, PieceType.Queen);
+                }
+            }
+        }
+
         // Snap piece to the sphere position
         SnapPieceToPosition(piece, targetPos);
+        
+        // Check if either king is missing from the board after the move
+        CheckForMissingKings();
+    }
+    
+    void CheckForMissingKings()
+    {
+        ChessPiece whiteKing = GetKing(PieceColor.White);
+        ChessPiece blackKing = GetKing(PieceColor.Black);
+        
+        if (whiteKing == null)
+        {
+            gameOver = true;
+            gameOverMessage = "Black wins! White king has been captured.";
+            Debug.Log(gameOverMessage);
+            ClearHighlights();
+        }
+        else if (blackKing == null)
+        {
+            gameOver = true;
+            gameOverMessage = "White wins! Black king has been captured.";
+            Debug.Log(gameOverMessage);
+            ClearHighlights();
+        }
+    }
+    
+    void PromotePawn(ChessPiece pawn, PieceType promotionType)
+    {
+        if (pawn.type != PieceType.Pawn)
+            return;
+        
+        Debug.Log($"Promoting {pawn.color} pawn at {PositionToSquareName(pawn.position)} to {promotionType}");
+        
+        Vector2Int position = pawn.position;
+        PieceColor color = pawn.color;
+        
+        // Try to get the prefab for the new piece type
+        GameObject newPiecePrefab = GetPiecePrefab(promotionType, color);
+        
+        // If no prefab, try to find an existing piece of this type and color in the scene to use as template
+        if (newPiecePrefab == null)
+        {
+            ChessPieceComponent[] allPieces = FindObjectsOfType<ChessPieceComponent>();
+            Debug.Log($"Searching for {color} {promotionType} template among {allPieces.Length} pieces in scene");
+            
+            foreach (var pieceComponent in allPieces)
+            {
+                // Use this piece as a template (but don't use the pawn itself)
+                if (pieceComponent.gameObject != pawn.pieceObject)
+                {
+                    if (pieceComponent.pieceType == promotionType && pieceComponent.pieceColor == color)
+                    {
+                        newPiecePrefab = pieceComponent.gameObject;
+                        Debug.Log($"Found existing {color} {promotionType} ({pieceComponent.gameObject.name}) in scene to use as template for promotion");
+                        break;
+                    }
+                }
+            }
+            
+            if (newPiecePrefab == null)
+            {
+                Debug.LogWarning($"No {color} {promotionType} found in scene to use as template. Searching board for pieces...");
+                // Also search the board for pieces
+                for (int x = 0; x < boardSize; x++)
+                {
+                    for (int y = 0; y < boardSize; y++)
+                    {
+                        ChessPiece boardPiece = GetPieceAt(new Vector2Int(x, y));
+                        if (boardPiece != null && boardPiece.type == promotionType && boardPiece.color == color)
+                        {
+                            if (boardPiece.pieceObject != null && boardPiece.pieceObject != pawn.pieceObject)
+                            {
+                                newPiecePrefab = boardPiece.pieceObject;
+                                Debug.Log($"Found {color} {promotionType} on board at {PositionToSquareName(new Vector2Int(x, y))} to use as template");
+                                break;
+                            }
+                        }
+                    }
+                    if (newPiecePrefab != null) break;
+                }
+            }
+        }
+        
+        if (newPiecePrefab != null && pawn.pieceObject != null)
+        {
+            // Replace the pawn GameObject with the new piece GameObject
+            Vector3 oldPosition = pawn.pieceObject.transform.position;
+            Quaternion oldRotation = pawn.pieceObject.transform.rotation;
+            Transform parent = pawn.pieceObject.transform.parent;
+            
+            // Destroy the old pawn GameObject
+            Destroy(pawn.pieceObject);
+            
+            // Instantiate the new piece
+            GameObject newPieceObj = Instantiate(newPiecePrefab);
+            
+            // Make sure the new piece is active BEFORE doing anything else
+            newPieceObj.SetActive(true);
+            
+            // Activate all children recursively
+            SetActiveRecursive(newPieceObj, true);
+            
+            newPieceObj.transform.position = oldPosition;
+            newPieceObj.transform.rotation = oldRotation;
+            if (parent != null)
+            {
+                newPieceObj.transform.SetParent(parent);
+            }
+            
+            // Add/update ChessPieceComponent
+            ChessPieceComponent component = newPieceObj.GetComponent<ChessPieceComponent>();
+            if (component == null)
+            {
+                component = newPieceObj.AddComponent<ChessPieceComponent>();
+            }
+            component.pieceType = promotionType;
+            component.pieceColor = color;
+            
+            // Update the ChessPiece reference
+            pawn.pieceObject = newPieceObj;
+            pawn.type = promotionType;
+            
+            // Ensure it has a collider
+            if (newPieceObj.GetComponent<Collider>() == null)
+            {
+                BoxCollider collider = newPieceObj.AddComponent<BoxCollider>();
+            }
+            
+            // Ensure renderers are enabled (including inactive children)
+            Renderer[] renderers = newPieceObj.GetComponentsInChildren<Renderer>(true); // Include inactive
+            foreach (var renderer in renderers)
+            {
+                if (renderer != null)
+                {
+                    renderer.enabled = true;
+                    // Also ensure the GameObject containing the renderer is active
+                    if (renderer.gameObject != null)
+                    {
+                        renderer.gameObject.SetActive(true);
+                    }
+                }
+            }
+            
+            // Also enable all MeshRenderers and SkinnedMeshRenderers specifically
+            MeshRenderer[] meshRenderers = newPieceObj.GetComponentsInChildren<MeshRenderer>(true);
+            foreach (var mr in meshRenderers)
+            {
+                if (mr != null)
+                {
+                    mr.enabled = true;
+                    if (mr.gameObject != null)
+                    {
+                        mr.gameObject.SetActive(true);
+                    }
+                }
+            }
+            
+            SkinnedMeshRenderer[] skinnedRenderers = newPieceObj.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+            foreach (var smr in skinnedRenderers)
+            {
+                if (smr != null)
+                {
+                    smr.enabled = true;
+                    if (smr.gameObject != null)
+                    {
+                        smr.gameObject.SetActive(true);
+                    }
+                }
+            }
+            
+            // Snap to position to ensure it's correctly placed
+            SnapPieceToPosition(pawn, position);
+            
+            Debug.Log($"Pawn replaced with {promotionType} GameObject at {PositionToSquareName(position)}. Active: {newPieceObj.activeSelf}, Renderers: {renderers.Length}");
+        }
+        else
+        {
+            // Fallback: Just update the type if we can't replace the GameObject
+            Debug.LogWarning($"Cannot replace pawn GameObject - no prefab or template found. Updating type only. You may need to set up piece prefabs or have pieces of each type in the scene.");
+            pawn.type = promotionType;
+            
+            // Update the ChessPieceComponent if it exists
+            if (pawn.pieceObject != null)
+            {
+                ChessPieceComponent component = pawn.pieceObject.GetComponent<ChessPieceComponent>();
+                if (component != null)
+                {
+                    component.pieceType = promotionType;
+                }
+            }
+        }
+        
+        Debug.Log($"Pawn promoted to {promotionType}");
+    }
+    
+    public void PromotePawnTo(ChessPiece pawn, PieceType promotionType)
+    {
+        PromotePawn(pawn, promotionType);
     }
 
     void SnapPieceToPosition(ChessPiece piece, Vector2Int boardPos)
@@ -515,7 +799,27 @@ public class ChessBoardWithPieces : MonoBehaviour
             }
             
             // Position the piece at the sphere's position with offset
-            piece.pieceObject.transform.position = spherePosition + new Vector3(0, yOffset, 0);
+            Vector3 targetPosition = spherePosition + new Vector3(0, yOffset, 0);
+            piece.pieceObject.transform.position = targetPosition;
+            
+            // Ensure the piece is active
+            if (!piece.pieceObject.activeSelf)
+            {
+                piece.pieceObject.SetActive(true);
+            }
+            
+            Debug.Log($"Snapped {piece.color} {piece.type} to {PositionToSquareName(boardPos)} at position {targetPosition}");
+        }
+        else
+        {
+            if (piece.pieceObject == null)
+            {
+                Debug.LogWarning($"Cannot snap piece - pieceObject is null for {piece.color} {piece.type} at {PositionToSquareName(boardPos)}");
+            }
+            else if (!positionToSphere.ContainsKey(boardPos))
+            {
+                Debug.LogWarning($"Cannot snap piece - no sphere found for position {PositionToSquareName(boardPos)}");
+            }
         }
     }
 
@@ -1094,7 +1398,7 @@ public class ChessBoardWithPieces : MonoBehaviour
         enPassantColor = null;
         ClearHighlights();
         
-        // Clear the board
+        // Clear the board first - remove all pieces from board array
         for (int x = 0; x < boardSize; x++)
         {
             for (int y = 0; y < boardSize; y++)
@@ -1103,32 +1407,202 @@ public class ChessBoardWithPieces : MonoBehaviour
             }
         }
         
-        // Reset all pieces to their initial positions
+        // Get all existing pieces in the scene (including those that might be off-board or in wrong positions)
         ChessPieceComponent[] allPieces = FindObjectsOfType<ChessPieceComponent>();
+        List<ChessPieceComponent> availablePieces = new List<ChessPieceComponent>(allPieces);
+        
+        Debug.Log($"ResetGame: Found {allPieces.Length} pieces in scene before reset");
+        
+        // Reset piece types if they were promoted (change promoted pieces back to their original type if needed)
+        // This handles cases where pawns were promoted to queens, etc.
         foreach (var pieceComponent in allPieces)
         {
-            if (initialPiecePositions.ContainsKey(pieceComponent.gameObject))
+            // We'll handle type restoration during placement based on standard positions
+        }
+        
+        // Dictionary to track which pieces we've placed
+        Dictionary<Vector2Int, bool> positionsPlaced = new Dictionary<Vector2Int, bool>();
+        
+        // First pass: Try to match existing pieces to their standard starting positions
+        foreach (var kvp in standardStartingPositions)
+        {
+            Vector2Int pos = kvp.Key;
+            PieceInfo requiredPiece = kvp.Value;
+            
+            // Try to find an existing piece that matches this position
+            ChessPieceComponent matchingPiece = null;
+            for (int i = availablePieces.Count - 1; i >= 0; i--)
             {
-                Vector2Int initialPos = initialPiecePositions[pieceComponent.gameObject];
+                var piece = availablePieces[i];
+                if (piece.pieceType == requiredPiece.type && piece.pieceColor == requiredPiece.color)
+                {
+                    matchingPiece = piece;
+                    availablePieces.RemoveAt(i);
+                    break;
+                }
+            }
+            
+            if (matchingPiece != null)
+            {
+                // Place this piece at the standard position
+                // Update the piece component to match the required type (in case it was promoted)
+                matchingPiece.pieceType = requiredPiece.type;
+                matchingPiece.pieceColor = requiredPiece.color;
                 
-                // Reset piece position
-                ChessPiece piece = new ChessPiece(
-                    pieceComponent.pieceType,
-                    pieceComponent.pieceColor,
-                    initialPos
-                );
-                piece.pieceObject = pieceComponent.gameObject;
-                piece.hasMoved = false; // Reset hasMoved flag
-                board[initialPos.x, initialPos.y] = piece;
+                // Make sure the piece GameObject is active and visible
+                matchingPiece.gameObject.SetActive(true);
                 
-                // Snap piece to initial position
-                SnapPieceToPosition(piece, initialPos);
+                // Ensure renderers are enabled
+                Renderer[] renderers = matchingPiece.GetComponentsInChildren<Renderer>();
+                foreach (var renderer in renderers)
+                {
+                    if (renderer != null)
+                    {
+                        renderer.enabled = true;
+                    }
+                }
                 
-                Debug.Log($"Reset {pieceComponent.pieceColor} {pieceComponent.pieceType} to {PositionToSquareName(initialPos)}");
+                ChessPiece chessPiece = new ChessPiece(requiredPiece.type, requiredPiece.color, pos);
+                chessPiece.pieceObject = matchingPiece.gameObject;
+                chessPiece.hasMoved = false;
+                board[pos.x, pos.y] = chessPiece;
+                SnapPieceToPosition(chessPiece, pos);
+                positionsPlaced[pos] = true;
+                Debug.Log($"Placed {requiredPiece.color} {requiredPiece.type} at {PositionToSquareName(pos)}");
+            }
+            else
+            {
+                // Need to spawn this piece
+                positionsPlaced[pos] = false;
+                Debug.LogWarning($"Missing {requiredPiece.color} {requiredPiece.type} for position {PositionToSquareName(pos)}");
             }
         }
         
-        Debug.Log("Game reset - all pieces returned to initial positions");
+        // Second pass: Spawn missing pieces or find templates to clone
+        foreach (var kvp in standardStartingPositions)
+        {
+            Vector2Int pos = kvp.Key;
+            PieceInfo requiredPiece = kvp.Value;
+            
+            if (!positionsPlaced[pos])
+            {
+                // Try to spawn the missing piece using prefab
+                GameObject piecePrefab = GetPiecePrefab(requiredPiece.type, requiredPiece.color);
+                if (piecePrefab != null)
+                {
+                    SpawnPiece(requiredPiece.type, requiredPiece.color, pos);
+                    ChessPiece spawnedPiece = GetPieceAt(pos);
+                    if (spawnedPiece != null)
+                    {
+                        spawnedPiece.hasMoved = false; // Reset hasMoved for spawned pieces
+                        positionsPlaced[pos] = true;
+                        Debug.Log($"Spawned {requiredPiece.color} {requiredPiece.type} at {PositionToSquareName(pos)}");
+                    }
+                }
+                else
+                {
+                    // Can't spawn from prefab - try to find any piece of this type/color to use as template
+                    ChessPieceComponent templatePiece = null;
+                    
+                    // First, try to find in available pieces list
+                    for (int i = availablePieces.Count - 1; i >= 0; i--)
+                    {
+                        var piece = availablePieces[i];
+                        if (piece.pieceType == requiredPiece.type && piece.pieceColor == requiredPiece.color)
+                        {
+                            templatePiece = piece;
+                            availablePieces.RemoveAt(i);
+                            break;
+                        }
+                    }
+                    
+                    // If not found in available pieces, search the entire scene (including pieces already placed)
+                    if (templatePiece == null)
+                    {
+                        ChessPieceComponent[] allScenePieces = FindObjectsOfType<ChessPieceComponent>();
+                        foreach (var piece in allScenePieces)
+                        {
+                            if (piece.pieceType == requiredPiece.type && piece.pieceColor == requiredPiece.color)
+                            {
+                                templatePiece = piece;
+                                Debug.Log($"Found template {requiredPiece.color} {requiredPiece.type} in scene: {piece.gameObject.name}");
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (templatePiece != null)
+                    {
+                        // Clone the template piece
+                        GameObject newPieceObj = Instantiate(templatePiece.gameObject);
+                        
+                        // Make sure the new piece is active and visible
+                        newPieceObj.SetActive(true);
+                        
+                        ChessPieceComponent newComponent = newPieceObj.GetComponent<ChessPieceComponent>();
+                        if (newComponent == null)
+                        {
+                            newComponent = newPieceObj.AddComponent<ChessPieceComponent>();
+                        }
+                        newComponent.pieceType = requiredPiece.type;
+                        newComponent.pieceColor = requiredPiece.color;
+                        
+                        // Ensure renderers are enabled
+                        Renderer[] renderers = newPieceObj.GetComponentsInChildren<Renderer>();
+                        foreach (var renderer in renderers)
+                        {
+                            if (renderer != null)
+                            {
+                                renderer.enabled = true;
+                            }
+                        }
+                        
+                        // Create ChessPiece
+                        ChessPiece chessPiece = new ChessPiece(requiredPiece.type, requiredPiece.color, pos);
+                        chessPiece.pieceObject = newPieceObj;
+                        chessPiece.hasMoved = false;
+                        board[pos.x, pos.y] = chessPiece;
+                        SnapPieceToPosition(chessPiece, pos);
+                        positionsPlaced[pos] = true;
+                        
+                        // Ensure it has a collider
+                        if (newPieceObj.GetComponent<Collider>() == null)
+                        {
+                            BoxCollider collider = newPieceObj.AddComponent<BoxCollider>();
+                        }
+                        
+                        Debug.Log($"Cloned {requiredPiece.color} {requiredPiece.type} from template and placed at {PositionToSquareName(pos)}");
+                    }
+                    else
+                    {
+                        Debug.LogError($"Cannot place {requiredPiece.color} {requiredPiece.type} at {PositionToSquareName(pos)} - no prefab and no template found in scene");
+                    }
+                }
+            }
+        }
+        
+        // Destroy any remaining pieces that weren't placed (extra pieces)
+        foreach (var extraPiece in availablePieces)
+        {
+            if (extraPiece != null && extraPiece.gameObject != null)
+            {
+                Debug.Log($"Destroying extra piece: {extraPiece.pieceColor} {extraPiece.pieceType}");
+                Destroy(extraPiece.gameObject);
+            }
+        }
+        
+        // Update initial positions dictionary for future resets
+        initialPiecePositions.Clear();
+        foreach (var kvp in standardStartingPositions)
+        {
+            ChessPiece piece = GetPieceAt(kvp.Key);
+            if (piece != null && piece.pieceObject != null)
+            {
+                initialPiecePositions[piece.pieceObject] = kvp.Key;
+            }
+        }
+        
+        Debug.Log("Game reset - all pieces placed at standard starting positions");
     }
     
     // ChatGPT Integration Methods
@@ -1141,6 +1615,11 @@ public class ChessBoardWithPieces : MonoBehaviour
     public void SetChatGPTPlayer(ChatGPTChessPlayer player)
     {
         chatGPTPlayer = player;
+    }
+    
+    public void SetUIManager(ChessUIManager uiManager)
+    {
+        chessUIManager = uiManager;
     }
     
     public void UpdateCameraReference()
@@ -1244,11 +1723,48 @@ public class ChessBoardWithPieces : MonoBehaviour
         board[targetPos.x, targetPos.y] = piece;
         piece.hasMoved = true;
         
+        // Check for pawn promotion
+        if (piece.type == PieceType.Pawn)
+        {
+            // White pawns promote on rank 8 (y = 7), black pawns promote on rank 1 (y = 0)
+            if ((piece.color == PieceColor.White && targetPos.y == 7) ||
+                (piece.color == PieceColor.Black && targetPos.y == 0))
+            {
+                PromotePawn(piece, PieceType.Queen); // Default to Queen for free mode
+            }
+        }
+        
         // Snap piece to position
         SnapPieceToPosition(piece, targetPos);
         
+        // Check if either king is missing from the board after the move
+        CheckForMissingKings();
+        if (gameOver) return; // Don't continue if game ended due to missing king
+        
         isWhiteTurn = !isWhiteTurn;
         totalMoveCount++;
+    }
+    
+    public bool WouldMovePutKingInCheck(ChessPiece piece, Vector2Int targetPos, PieceColor kingColor)
+    {
+        // Simulate the move and check if the king would be in check after
+        Vector2Int oldPos = piece.position;
+        ChessPiece capturedPiece = GetPieceAt(targetPos);
+        
+        // Temporarily make the move
+        board[oldPos.x, oldPos.y] = null;
+        board[targetPos.x, targetPos.y] = piece;
+        piece.position = targetPos;
+        
+        // Check if king is in check
+        bool kingInCheck = IsKingInCheck(kingColor);
+        
+        // Restore the board
+        board[oldPos.x, oldPos.y] = piece;
+        board[targetPos.x, targetPos.y] = capturedPiece;
+        piece.position = oldPos;
+        
+        return kingInCheck;
     }
     
     public bool WouldMoveGetOutOfCheck(ChessPiece piece, Vector2Int targetPos)
@@ -1601,6 +2117,20 @@ public class ChessBoardWithPieces : MonoBehaviour
                     }
                 }
             }
+        }
+    }
+    
+    // Helper method to recursively set active state on GameObject and all children
+    void SetActiveRecursive(GameObject obj, bool active)
+    {
+        if (obj == null) return;
+        
+        obj.SetActive(active);
+        
+        // Recursively activate all children
+        foreach (Transform child in obj.transform)
+        {
+            SetActiveRecursive(child.gameObject, active);
         }
     }
     
