@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using System;
 
 public enum PieceType
 {
@@ -284,6 +285,9 @@ public class ChessBoardWithPieces : MonoBehaviour
                 
                 // Snap piece to the sphere position
                 SnapPieceToPosition(piece, boardPos);
+                
+                // Add label to the piece
+                AddPieceLabel(piece);
                 
                 Debug.Log($"Registered {pieceComponent.pieceColor} {pieceComponent.pieceType} at {PositionToSquareName(boardPos)}");
             }
@@ -612,10 +616,18 @@ public class ChessBoardWithPieces : MonoBehaviour
     
     void PromotePawn(ChessPiece pawn, PieceType promotionType)
     {
-        if (pawn.type != PieceType.Pawn)
-            return;
+        // Allow promotion from Pawn or from Queen (if ChatGPT wants to override default Queen promotion)
+        bool isPawn = pawn.type == PieceType.Pawn;
+        bool isQueenOverride = pawn.type == PieceType.Queen && promotionType != PieceType.Queen;
         
-        Debug.Log($"Promoting {pawn.color} pawn at {PositionToSquareName(pawn.position)} to {promotionType}");
+        if (!isPawn && !isQueenOverride)
+        {
+            Debug.LogWarning($"Cannot promote {pawn.type} to {promotionType}. Only pawns can be promoted (or Queen can be overridden).");
+            return;
+        }
+        
+        string pieceTypeName = isPawn ? "pawn" : "queen";
+        Debug.Log($"Promoting {pawn.color} {pieceTypeName} at {PositionToSquareName(pawn.position)} to {promotionType}");
         
         Vector2Int position = pawn.position;
         PieceColor color = pawn.color;
@@ -623,46 +635,124 @@ public class ChessBoardWithPieces : MonoBehaviour
         // Try to get the prefab for the new piece type
         GameObject newPiecePrefab = GetPiecePrefab(promotionType, color);
         
-        // If no prefab, try to find an existing piece of this type and color in the scene to use as template
+        // If no prefab, try to find an existing piece of this type in the scene to use as template
+        // This includes inactive decorative pieces on the side of the board
         if (newPiecePrefab == null)
         {
-            ChessPieceComponent[] allPieces = FindObjectsOfType<ChessPieceComponent>();
-            Debug.Log($"Searching for {color} {promotionType} template among {allPieces.Length} pieces in scene");
+            // Search for active pieces first (includes inactive parameter = false)
+            ChessPieceComponent[] activePieces = FindObjectsOfType<ChessPieceComponent>(false);
+            Debug.Log($"Searching for {promotionType} template among {activePieces.Length} active pieces in scene");
             
-            foreach (var pieceComponent in allPieces)
+            // First priority: Find active piece of same type AND same color
+            foreach (var pieceComponent in activePieces)
             {
-                // Use this piece as a template (but don't use the pawn itself)
-                if (pieceComponent.gameObject != pawn.pieceObject)
+                if (pieceComponent.gameObject != pawn.pieceObject && 
+                    pieceComponent.pieceType == promotionType && 
+                    pieceComponent.pieceColor == color)
                 {
-                    if (pieceComponent.pieceType == promotionType && pieceComponent.pieceColor == color)
+                    newPiecePrefab = pieceComponent.gameObject;
+                    Debug.Log($"Found existing {color} {promotionType} ({pieceComponent.gameObject.name}) in scene to use as template for promotion");
+                    break;
+                }
+            }
+            
+            // Second priority: Find active piece of same type but opposite color (we'll update the color component)
+            if (newPiecePrefab == null)
+            {
+                PieceColor oppositeColor = (color == PieceColor.White) ? PieceColor.Black : PieceColor.White;
+                foreach (var pieceComponent in activePieces)
+                {
+                    if (pieceComponent.gameObject != pawn.pieceObject && 
+                        pieceComponent.pieceType == promotionType && 
+                        pieceComponent.pieceColor == oppositeColor)
                     {
                         newPiecePrefab = pieceComponent.gameObject;
-                        Debug.Log($"Found existing {color} {promotionType} ({pieceComponent.gameObject.name}) in scene to use as template for promotion");
+                        Debug.Log($"Found {oppositeColor} {promotionType} template (will change to {color}) to use for promotion");
                         break;
                     }
                 }
             }
             
+            // Third priority: Search the board array for pieces
             if (newPiecePrefab == null)
             {
-                Debug.LogWarning($"No {color} {promotionType} found in scene to use as template. Searching board for pieces...");
-                // Also search the board for pieces
                 for (int x = 0; x < boardSize; x++)
                 {
                     for (int y = 0; y < boardSize; y++)
                     {
                         ChessPiece boardPiece = GetPieceAt(new Vector2Int(x, y));
-                        if (boardPiece != null && boardPiece.type == promotionType && boardPiece.color == color)
+                        if (boardPiece != null && boardPiece.type == promotionType)
                         {
                             if (boardPiece.pieceObject != null && boardPiece.pieceObject != pawn.pieceObject)
                             {
                                 newPiecePrefab = boardPiece.pieceObject;
-                                Debug.Log($"Found {color} {promotionType} on board at {PositionToSquareName(new Vector2Int(x, y))} to use as template");
+                                Debug.Log($"Found {boardPiece.color} {promotionType} on board at {PositionToSquareName(new Vector2Int(x, y))} to use as template");
                                 break;
                             }
                         }
                     }
                     if (newPiecePrefab != null) break;
+                }
+            }
+            
+            // Fourth priority: Search for INACTIVE decorative pieces (includes inactive parameter = true)
+            // These are pieces placed on the side of the board as decoration/templates
+            if (newPiecePrefab == null)
+            {
+                ChessPieceComponent[] allPiecesIncludingInactive = FindObjectsOfType<ChessPieceComponent>(true);
+                Debug.Log($"Searching for {promotionType} template among {allPiecesIncludingInactive.Length} pieces (including inactive) in scene");
+                
+                // Prefer inactive decorative pieces of the same color
+                foreach (var pieceComponent in allPiecesIncludingInactive)
+                {
+                    if (pieceComponent.gameObject != pawn.pieceObject && 
+                        pieceComponent.pieceType == promotionType && 
+                        pieceComponent.pieceColor == color)
+                    {
+                        // Check if it's inactive (decorative piece on the side)
+                        if (!pieceComponent.gameObject.activeInHierarchy)
+                        {
+                            newPiecePrefab = pieceComponent.gameObject;
+                            Debug.Log($"Found inactive decorative {color} {promotionType} ({pieceComponent.gameObject.name}) to use as template for promotion");
+                            break;
+                        }
+                    }
+                }
+                
+                // If still not found, try inactive pieces of opposite color
+                if (newPiecePrefab == null)
+                {
+                    PieceColor oppositeColor = (color == PieceColor.White) ? PieceColor.Black : PieceColor.White;
+                    foreach (var pieceComponent in allPiecesIncludingInactive)
+                    {
+                        if (pieceComponent.gameObject != pawn.pieceObject && 
+                            pieceComponent.pieceType == promotionType && 
+                            pieceComponent.pieceColor == oppositeColor)
+                        {
+                            if (!pieceComponent.gameObject.activeInHierarchy)
+                            {
+                                newPiecePrefab = pieceComponent.gameObject;
+                                Debug.Log($"Found inactive decorative {oppositeColor} {promotionType} template (will change to {color}) to use for promotion");
+                                break;
+                            }
+                        }
+                    }
+                }
+                
+                // Last resort: Any inactive piece of this type
+                if (newPiecePrefab == null)
+                {
+                    foreach (var pieceComponent in allPiecesIncludingInactive)
+                    {
+                        if (pieceComponent.gameObject != pawn.pieceObject && 
+                            pieceComponent.pieceType == promotionType &&
+                            !pieceComponent.gameObject.activeInHierarchy)
+                        {
+                            newPiecePrefab = pieceComponent.gameObject;
+                            Debug.Log($"Found inactive {pieceComponent.pieceColor} {promotionType} ({pieceComponent.gameObject.name}) anywhere in scene to use as template");
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -705,6 +795,9 @@ public class ChessBoardWithPieces : MonoBehaviour
             // Update the ChessPiece reference
             pawn.pieceObject = newPieceObj;
             pawn.type = promotionType;
+            
+            // Add/update label for the promoted piece
+            AddPieceLabel(pawn);
             
             // Ensure it has a collider
             if (newPieceObj.GetComponent<Collider>() == null)
@@ -789,7 +882,20 @@ public class ChessBoardWithPieces : MonoBehaviour
         if (piece.pieceObject != null && positionToSphere.ContainsKey(boardPos))
         {
             GameObject targetSphere = positionToSphere[boardPos];
+            if (targetSphere == null || targetSphere.transform == null)
+            {
+                Debug.LogWarning($"Cannot snap piece - targetSphere is null for position {PositionToSquareName(boardPos)}");
+                return;
+            }
+            
             Vector3 spherePosition = targetSphere.transform.position;
+            
+            // Validate sphere position to prevent NaN/Infinity
+            if (!IsValidVector3(spherePosition))
+            {
+                Debug.LogWarning($"Invalid sphere position (NaN/Infinity) at {PositionToSquareName(boardPos)}. Using fallback position.");
+                spherePosition = Vector3.zero;
+            }
             
             // Add Y offset for pawns to prevent them from falling through the board
             float yOffset = 0f;
@@ -800,7 +906,17 @@ public class ChessBoardWithPieces : MonoBehaviour
             
             // Position the piece at the sphere's position with offset
             Vector3 targetPosition = spherePosition + new Vector3(0, yOffset, 0);
-            piece.pieceObject.transform.position = targetPosition;
+            
+            // Validate target position before setting
+            if (IsValidVector3(targetPosition))
+            {
+                piece.pieceObject.transform.position = targetPosition;
+            }
+            else
+            {
+                Debug.LogError($"Invalid target position (NaN/Infinity) for piece at {PositionToSquareName(boardPos)}. Using fallback.");
+                piece.pieceObject.transform.position = Vector3.zero + new Vector3(0, yOffset, 0);
+            }
             
             // Ensure the piece is active
             if (!piece.pieceObject.activeSelf)
@@ -1565,6 +1681,9 @@ public class ChessBoardWithPieces : MonoBehaviour
                         SnapPieceToPosition(chessPiece, pos);
                         positionsPlaced[pos] = true;
                         
+                        // Add label to the piece
+                        AddPieceLabel(chessPiece);
+                        
                         // Ensure it has a collider
                         if (newPieceObj.GetComponent<Collider>() == null)
                         {
@@ -1822,6 +1941,9 @@ public class ChessBoardWithPieces : MonoBehaviour
             
             board[position.x, position.y] = newPiece;
             SnapPieceToPosition(newPiece, position);
+            
+            // Add label to the spawned piece
+            AddPieceLabel(newPiece);
             
             Debug.Log($"Spawned {color} {type} at {PositionToSquareName(position)}");
         }
@@ -2184,5 +2306,531 @@ public class ChessBoardWithPieces : MonoBehaviour
                 }
             }
         }
+    }
+    
+    /// <summary>
+    /// Adds a text label above a chess piece that displays the piece name and always faces the camera
+    /// </summary>
+    void AddPieceLabel(ChessPiece piece)
+    {
+        if (piece == null || piece.pieceObject == null)
+            return;
+        
+        // Check if label already exists
+        Transform existingLabel = piece.pieceObject.transform.Find("PieceLabel");
+        if (existingLabel != null)
+        {
+            // Update existing label text, size, and color
+            BillboardText billboard = existingLabel.GetComponent<BillboardText>();
+            if (billboard != null)
+            {
+                billboard.SetText(GetPieceDisplayName(piece.type));
+            }
+            
+            // Update TextMeshPro if it exists
+            Component existingTmp = null;
+            Type existingTmpType = Type.GetType("TMPro.TextMeshPro, Assembly-CSharp");
+            if (existingTmpType != null)
+            {
+                existingTmp = existingLabel.GetComponent(existingTmpType);
+            }
+            if (existingTmp != null)
+            {
+                Type existingTmpType2 = existingTmp.GetType();
+                var fontSizeProperty = existingTmpType2.GetProperty("fontSize");
+                var colorProperty = existingTmpType2.GetProperty("color");
+                if (fontSizeProperty != null) fontSizeProperty.SetValue(existingTmp, 0.8f); // 20% smaller (1f * 0.8 = 0.8f)
+                if (colorProperty != null) colorProperty.SetValue(existingTmp, Color.white);
+            }
+            else
+            {
+                // Update TextMesh if it exists
+                TextMesh textMesh = existingLabel.GetComponent<TextMesh>();
+                if (textMesh != null)
+                {
+                    textMesh.fontSize = 26; // 20% smaller (33 * 0.8 ≈ 26)
+                    textMesh.color = Color.white;
+                    textMesh.characterSize = 0.134f; // 20% smaller (0.167 * 0.8 ≈ 0.134)
+                }
+            }
+            
+            return;
+        }
+        
+        // Create a new GameObject for the label
+        GameObject labelObj = new GameObject("PieceLabel");
+        labelObj.transform.SetParent(piece.pieceObject.transform);
+        labelObj.transform.localPosition = Vector3.zero;
+        
+        // Try to get the bounds of the piece to position the label above it
+        Renderer pieceRenderer = piece.pieceObject.GetComponentInChildren<Renderer>();
+        if (pieceRenderer != null)
+        {
+            Bounds bounds = pieceRenderer.bounds;
+            // Validate bounds to prevent NaN/Infinity
+            if (IsValidVector3(bounds.center) && IsValidVector3(bounds.extents))
+            {
+                // Position label above the piece (in world space, then convert to local)
+                Vector3 worldPos = bounds.center + Vector3.up * (bounds.extents.y + 0.3f);
+                if (IsValidVector3(worldPos))
+                {
+                    labelObj.transform.position = worldPos;
+                }
+                else
+                {
+                    // Fallback: position 1 unit above the piece
+                    labelObj.transform.localPosition = Vector3.up * 1.5f;
+                }
+            }
+            else
+            {
+                // Fallback: position 1 unit above the piece
+                labelObj.transform.localPosition = Vector3.up * 1.5f;
+            }
+        }
+        else
+        {
+            // Fallback: position 1 unit above the piece
+            labelObj.transform.localPosition = Vector3.up * 1.5f;
+        }
+        
+        // Try to add TextMeshPro first (preferred), then fallback to TextMesh
+        Component tmp = null;
+        try
+        {
+            // Try to add TextMeshPro using reflection
+            Type tmpType = Type.GetType("TMPro.TextMeshPro, Assembly-CSharp");
+            if (tmpType != null)
+            {
+                tmp = labelObj.AddComponent(tmpType) as Component;
+                if (tmp != null)
+                {
+                    // Set properties using reflection
+                    var textProperty = tmpType.GetProperty("text");
+                    var fontSizeProperty = tmpType.GetProperty("fontSize");
+                    var alignmentProperty = tmpType.GetProperty("alignment");
+                    var colorProperty = tmpType.GetProperty("color");
+                    var sortingOrderProperty = tmpType.GetProperty("sortingOrder");
+                    var enableWordWrappingProperty = tmpType.GetProperty("enableWordWrapping");
+                    var overflowModeProperty = tmpType.GetProperty("overflowMode");
+                    
+                    if (textProperty != null) textProperty.SetValue(tmp, GetPieceDisplayName(piece.type));
+                    if (fontSizeProperty != null) fontSizeProperty.SetValue(tmp, 0.8f); // 20% smaller (1f * 0.8 = 0.8f)
+                    if (colorProperty != null) colorProperty.SetValue(tmp, Color.white); // Always white
+                    if (sortingOrderProperty != null) sortingOrderProperty.SetValue(tmp, 100);
+                    
+                    // Set alignment enum value
+                    if (alignmentProperty != null)
+                    {
+                        Type alignmentType = Type.GetType("TMPro.TextAlignmentOptions, Assembly-CSharp");
+                        if (alignmentType != null)
+                        {
+                            var centerValue = Enum.Parse(alignmentType, "Center");
+                            alignmentProperty.SetValue(tmp, centerValue);
+                        }
+                    }
+                    
+                    if (enableWordWrappingProperty != null) enableWordWrappingProperty.SetValue(tmp, false);
+                    if (overflowModeProperty != null)
+                    {
+                        Type overflowType = Type.GetType("TMPro.TextOverflowModes, Assembly-CSharp");
+                        if (overflowType != null)
+                        {
+                            var overflowValue = Enum.Parse(overflowType, "Overflow");
+                            overflowModeProperty.SetValue(tmp, overflowValue);
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.Log($"Could not add TextMeshPro: {e.Message}. Falling back to TextMesh.");
+        }
+        
+        // Fallback to legacy TextMesh if TextMeshPro is not available
+        if (tmp == null)
+        {
+            TextMesh textMesh = labelObj.AddComponent<TextMesh>();
+            textMesh.text = GetPieceDisplayName(piece.type);
+            textMesh.fontSize = 40; // 20% smaller (50 * 0.8 = 40)
+            textMesh.anchor = TextAnchor.MiddleCenter;
+            textMesh.color = Color.white; // Always white
+            textMesh.characterSize = 0.24f; // 20% smaller (0.3 * 0.8 = 0.24)
+        }
+        
+        // Add BillboardText component to make it face the camera
+        BillboardText billboardText = labelObj.AddComponent<BillboardText>();
+        
+        Debug.Log($"Added label '{GetPieceDisplayName(piece.type)}' to {piece.color} {piece.type}");
+    }
+    
+    /// <summary>
+    /// Creates a grey transparent background with a black rounded border for the label
+    /// </summary>
+    void AddLabelBackground(GameObject labelObj)
+    {
+        // Get the actual text bounds
+        float textWidth = 0.4f;
+        float textHeight = 0.2f;
+        
+        // Try to get TextMeshPro bounds
+        Component tmp = null;
+        Type tmpType = Type.GetType("TMPro.TextMeshPro, Assembly-CSharp");
+        if (tmpType != null)
+        {
+            tmp = labelObj.GetComponent(tmpType);
+        }
+        
+        if (tmp != null)
+        {
+            // Force TextMeshPro to update its mesh to get accurate bounds
+            var forceMeshUpdateMethod = tmp.GetType().GetMethod("ForceMeshUpdate");
+            if (forceMeshUpdateMethod != null)
+            {
+                forceMeshUpdateMethod.Invoke(tmp, new object[] { false });
+            }
+            
+            // Try to get preferred width/height first (more accurate for text size)
+            var preferredWidthProperty = tmp.GetType().GetProperty("preferredWidth");
+            var preferredHeightProperty = tmp.GetType().GetProperty("preferredHeight");
+            
+            if (preferredWidthProperty != null && preferredHeightProperty != null)
+            {
+                float prefWidth = (float)(preferredWidthProperty.GetValue(tmp) ?? 0f);
+                float prefHeight = (float)(preferredHeightProperty.GetValue(tmp) ?? 0f);
+                
+                if (prefWidth > 0 && prefHeight > 0)
+                {
+                    // TextMeshPro preferred dimensions are in local units
+                    // Get the rectTransform to convert properly
+                    RectTransform rectTransform = labelObj.GetComponent<RectTransform>();
+                    if (rectTransform != null)
+                    {
+                        textWidth = prefWidth;
+                        textHeight = prefHeight;
+                    }
+                    else
+                    {
+                        // For 3D TextMeshPro, use a scale factor
+                        // Typically TextMeshPro in 3D uses fontSize directly
+                        var fontSizeProperty = tmp.GetType().GetProperty("fontSize");
+                        float fontSize = fontSizeProperty != null ? (float)(fontSizeProperty.GetValue(tmp) ?? 1f) : 1f;
+                        textWidth = prefWidth * (fontSize / 100f);
+                        textHeight = prefHeight * (fontSize / 100f);
+                    }
+                }
+            }
+            
+            // If preferred dimensions didn't work, try textBounds (most reliable for 3D)
+            if (textWidth <= 0.1f || textHeight <= 0.1f)
+            {
+                var textBoundsProperty = tmp.GetType().GetProperty("textBounds");
+                if (textBoundsProperty != null)
+                {
+                    Bounds bounds = (Bounds)textBoundsProperty.GetValue(tmp);
+                    if (bounds.size.x > 0 && bounds.size.y > 0)
+                    {
+                        textWidth = bounds.size.x;
+                        textHeight = bounds.size.y;
+                    }
+                }
+            }
+            
+            // Final fallback: use renderer bounds (most reliable fallback)
+            if (textWidth <= 0.1f || textHeight <= 0.1f)
+            {
+                Renderer renderer = labelObj.GetComponent<Renderer>();
+                if (renderer != null && renderer.bounds.size.x > 0 && renderer.bounds.size.y > 0)
+                {
+                    Bounds bounds = renderer.bounds;
+                    // Convert world bounds to local space
+                    Vector3 localScale = labelObj.transform.lossyScale;
+                    if (localScale.x > 0 && localScale.y > 0)
+                    {
+                        textWidth = bounds.size.x / localScale.x;
+                        textHeight = bounds.size.y / localScale.y;
+                    }
+                    else
+                    {
+                        textWidth = bounds.size.x;
+                        textHeight = bounds.size.y;
+                    }
+                }
+            }
+        }
+        else
+        {
+            // Use TextMesh renderer bounds
+            TextMesh textMesh = labelObj.GetComponent<TextMesh>();
+            if (textMesh != null)
+            {
+                Renderer renderer = labelObj.GetComponent<Renderer>();
+                if (renderer != null)
+                {
+                    Bounds bounds = renderer.bounds;
+                    // Convert to local space (with safety check to prevent division by zero)
+                    Vector3 localScale = labelObj.transform.lossyScale;
+                    if (Mathf.Abs(localScale.x) > 0.0001f && Mathf.Abs(localScale.y) > 0.0001f)
+                    {
+                        textWidth = bounds.size.x / localScale.x;
+                        textHeight = bounds.size.y / localScale.y;
+                    }
+                    else
+                    {
+                        textWidth = bounds.size.x;
+                        textHeight = bounds.size.y;
+                    }
+                    
+                    // Validate results to prevent NaN/Infinity
+                    if (float.IsNaN(textWidth) || float.IsInfinity(textWidth)) textWidth = 0.3f;
+                    if (float.IsNaN(textHeight) || float.IsInfinity(textHeight)) textHeight = 0.15f;
+                }
+            }
+        }
+        
+        // Validate and ensure minimum size (prevent NaN/Infinity)
+        if (float.IsNaN(textWidth) || float.IsInfinity(textWidth) || textWidth <= 0)
+            textWidth = 0.3f;
+        if (float.IsNaN(textHeight) || float.IsInfinity(textHeight) || textHeight <= 0)
+            textHeight = 0.15f;
+        
+        textWidth = Mathf.Max(0.3f, textWidth);
+        textHeight = Mathf.Max(0.15f, textHeight);
+        
+        // Border is 3px larger (convert pixels to world units - assuming 100 pixels per unit)
+        float borderPadding = 3f / 100f; // 3 pixels = 0.03 world units
+        
+        // Create rounded rectangle textures
+        int bgWidth = 128;
+        int bgHeight = 64;
+        int borderWidth = bgWidth + 6; // 3px on each side
+        int borderHeight = bgHeight + 6;
+        int cornerRadius = 8;
+        
+        Texture2D bgTexture = CreateRoundedRectangleTexture(bgWidth, bgHeight, cornerRadius, new Color(0.5f, 0.5f, 0.5f, 0.7f)); // Grey, 70% opacity
+        Texture2D borderTexture = CreateRoundedRectangleBorder(borderWidth, borderHeight, cornerRadius + 3, 3, Color.black); // Black border, 3px thick
+        
+        // Create border sprite (behind everything)
+        GameObject borderObj = new GameObject("LabelBorder");
+        borderObj.transform.SetParent(labelObj.transform);
+        borderObj.transform.localPosition = Vector3.zero;
+        borderObj.transform.localRotation = Quaternion.identity;
+        
+        SpriteRenderer borderRenderer = borderObj.AddComponent<SpriteRenderer>();
+        Sprite borderSprite = Sprite.Create(borderTexture, new Rect(0, 0, borderTexture.width, borderTexture.height), new Vector2(0.5f, 0.5f), 100f);
+        borderRenderer.sprite = borderSprite;
+        borderRenderer.sortingOrder = 98; // Behind background and text
+        
+        // Create background sprite (in front of border, behind text)
+        GameObject bgObj = new GameObject("LabelBackground");
+        bgObj.transform.SetParent(labelObj.transform);
+        bgObj.transform.localPosition = Vector3.zero;
+        bgObj.transform.localRotation = Quaternion.identity;
+        
+        SpriteRenderer bgRenderer = bgObj.AddComponent<SpriteRenderer>();
+        Sprite bgSprite = Sprite.Create(bgTexture, new Rect(0, 0, bgTexture.width, bgTexture.height), new Vector2(0.5f, 0.5f), 100f);
+        bgRenderer.sprite = bgSprite;
+        bgRenderer.sortingOrder = 99; // Behind text, in front of border
+        
+        // Scale to match text size exactly (with small padding for visual spacing)
+        float padding = 0.05f; // Small padding around text for visual spacing
+        bgObj.transform.localScale = new Vector3(textWidth + padding * 2, textHeight + padding * 2, 1f);
+        borderObj.transform.localScale = new Vector3(textWidth + borderPadding * 2 + padding * 2, textHeight + borderPadding * 2 + padding * 2, 1f);
+    }
+    
+    /// <summary>
+    /// Creates a rounded rectangle texture with the specified dimensions, corner radius, and color
+    /// </summary>
+    Texture2D CreateRoundedRectangleTexture(int width, int height, int cornerRadius, Color color)
+    {
+        Texture2D texture = new Texture2D(width, height, TextureFormat.RGBA32, false);
+        Color[] pixels = new Color[width * height];
+        
+        // Fill with transparent
+        for (int i = 0; i < pixels.Length; i++)
+        {
+            pixels[i] = Color.clear;
+        }
+        
+        // Draw rounded rectangle
+        int radiusSquared = cornerRadius * cornerRadius;
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                int index = y * width + x;
+                
+                // Check if pixel is inside the rounded rectangle
+                bool inside = true;
+                
+                // Check corners
+                if (x < cornerRadius && y < cornerRadius)
+                {
+                    // Top-left corner
+                    int dx = x - cornerRadius;
+                    int dy = y - cornerRadius;
+                    if (dx * dx + dy * dy > radiusSquared)
+                        inside = false;
+                }
+                else if (x >= width - cornerRadius && y < cornerRadius)
+                {
+                    // Top-right corner
+                    int dx = x - (width - cornerRadius);
+                    int dy = y - cornerRadius;
+                    if (dx * dx + dy * dy > radiusSquared)
+                        inside = false;
+                }
+                else if (x < cornerRadius && y >= height - cornerRadius)
+                {
+                    // Bottom-left corner
+                    int dx = x - cornerRadius;
+                    int dy = y - (height - cornerRadius);
+                    if (dx * dx + dy * dy > radiusSquared)
+                        inside = false;
+                }
+                else if (x >= width - cornerRadius && y >= height - cornerRadius)
+                {
+                    // Bottom-right corner
+                    int dx = x - (width - cornerRadius);
+                    int dy = y - (height - cornerRadius);
+                    if (dx * dx + dy * dy > radiusSquared)
+                        inside = false;
+                }
+                
+                if (inside)
+                {
+                    pixels[index] = color;
+                }
+            }
+        }
+        
+        texture.SetPixels(pixels);
+        texture.Apply();
+        return texture;
+    }
+    
+    /// <summary>
+    /// Creates a rounded rectangle border texture (hollow, only the border outline)
+    /// </summary>
+    Texture2D CreateRoundedRectangleBorder(int width, int height, int cornerRadius, int borderWidth, Color color)
+    {
+        Texture2D texture = new Texture2D(width, height, TextureFormat.RGBA32, false);
+        Color[] pixels = new Color[width * height];
+        
+        // Fill with transparent
+        for (int i = 0; i < pixels.Length; i++)
+        {
+            pixels[i] = Color.clear;
+        }
+        
+        // Draw rounded rectangle border
+        int radiusSquared = cornerRadius * cornerRadius;
+        int innerRadius = Mathf.Max(0, cornerRadius - borderWidth);
+        int innerRadiusSquared = innerRadius * innerRadius;
+        
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                int index = y * width + x;
+                bool onBorder = false;
+                
+                // Check if pixel is within border area
+                bool inOuterRect = (x >= 0 && x < width && y >= 0 && y < height);
+                bool inInnerRect = (x >= borderWidth && x < width - borderWidth && 
+                                    y >= borderWidth && y < height - borderWidth);
+                
+                if (inOuterRect && !inInnerRect)
+                {
+                    // Check corners
+                    bool inCorner = false;
+                    int cornerDistSquared = 0;
+                    
+                    if (x < cornerRadius && y < cornerRadius)
+                    {
+                        // Top-left corner
+                        int dx = x - cornerRadius;
+                        int dy = y - cornerRadius;
+                        cornerDistSquared = dx * dx + dy * dy;
+                        inCorner = true;
+                    }
+                    else if (x >= width - cornerRadius && y < cornerRadius)
+                    {
+                        // Top-right corner
+                        int dx = x - (width - cornerRadius);
+                        int dy = y - cornerRadius;
+                        cornerDistSquared = dx * dx + dy * dy;
+                        inCorner = true;
+                    }
+                    else if (x < cornerRadius && y >= height - cornerRadius)
+                    {
+                        // Bottom-left corner
+                        int dx = x - cornerRadius;
+                        int dy = y - (height - cornerRadius);
+                        cornerDistSquared = dx * dx + dy * dy;
+                        inCorner = true;
+                    }
+                    else if (x >= width - cornerRadius && y >= height - cornerRadius)
+                    {
+                        // Bottom-right corner
+                        int dx = x - (width - cornerRadius);
+                        int dy = y - (height - cornerRadius);
+                        cornerDistSquared = dx * dx + dy * dy;
+                        inCorner = true;
+                    }
+                    
+                    if (inCorner)
+                    {
+                        // In corner area - check if within outer radius but outside inner radius
+                        if (cornerDistSquared <= radiusSquared && cornerDistSquared > innerRadiusSquared)
+                        {
+                            onBorder = true;
+                        }
+                    }
+                    else
+                    {
+                        // On straight edge
+                        onBorder = true;
+                    }
+                }
+                
+                if (onBorder)
+                {
+                    pixels[index] = color;
+                }
+            }
+        }
+        
+        texture.SetPixels(pixels);
+        texture.Apply();
+        return texture;
+    }
+    
+    /// <summary>
+    /// Gets the display name for a piece type
+    /// </summary>
+    string GetPieceDisplayName(PieceType type)
+    {
+        switch (type)
+        {
+            case PieceType.Pawn: return "Pawn";
+            case PieceType.Rook: return "Rook";
+            case PieceType.Knight: return "Knight";
+            case PieceType.Bishop: return "Bishop";
+            case PieceType.Queen: return "Queen";
+            case PieceType.King: return "King";
+            default: return "Piece";
+        }
+    }
+    
+    /// <summary>
+    /// Validates that a Vector3 doesn't contain NaN or Infinity values
+    /// </summary>
+    bool IsValidVector3(Vector3 v)
+    {
+        return !float.IsNaN(v.x) && !float.IsInfinity(v.x) &&
+               !float.IsNaN(v.y) && !float.IsInfinity(v.y) &&
+               !float.IsNaN(v.z) && !float.IsInfinity(v.z);
     }
 }
