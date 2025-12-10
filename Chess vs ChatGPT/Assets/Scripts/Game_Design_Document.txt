@@ -1,0 +1,404 @@
+================================================================================
+                    CHESS VS CHATGPT - GAME DESIGN DOCUMENT
+================================================================================
+
+Version: 1.0
+Date: 2024
+Platform: Unity 3D (PC/Desktop)
+Genre: Strategy, Puzzle, Experimental AI Game
+
+================================================================================
+                            EXECUTIVE SUMMARY
+================================================================================
+
+Chess VS ChatGPT is an innovative chess game that pits human players against
+OpenAI's ChatGPT AI as an opponent. The game combines traditional chess
+mechanics with an experimental twist: after the opening phase, ChatGPT has a
+chance to "break the rules" and create chaotic, unpredictable gameplay
+situations. This creates a unique experience where players must adapt to both
+strategic chess play and unexpected rule-breaking moves from an AI opponent.
+
+The game is built in Unity 3D with a full 3D chess board, piece models, and
+dual-camera perspectives. Players can choose to play as either White or Black,
+and the game features complete chess rule implementation including check,
+checkmate, stalemate, castling, en passant, and pawn promotion.
+
+================================================================================
+                    MDA FRAMEWORK ANALYSIS
+================================================================================
+
+MECHANICS (What the game does - the rules and systems)
+
+1. Core Chess Mechanics:
+   - Standard 8x8 chess board with all 32 pieces in starting positions
+   - Complete chess rule implementation:
+     * Piece movement rules (pawn, rook, knight, bishop, queen, king)
+     * Check and checkmate detection
+     * Stalemate detection
+     * Castling (kingside and queenside)
+     * En passant capture
+     * Pawn promotion (queen, rook, bishop, knight)
+   - Turn-based gameplay alternating between player and ChatGPT
+   - Move validation ensuring legal moves only for human player
+   - Game state tracking (active turn, game over conditions)
+
+2. AI Opponent Mechanics (ChatGPT):
+   - OpenAI API integration for move generation
+   - Two-phase behavior system:
+     * Phase 1 (Moves 1-6): Strict chess rule adherence (100% normal play)
+     * Phase 2 (Move 7+): Hybrid mode
+       - 80% probability: Normal chess play following all rules
+       - 20% probability: "Free Mode" - rule-breaking behavior
+   - Free Mode capabilities:
+     * Move pieces to any square (even if illegal by chess rules)
+     * Spawn new pieces of any type at any empty square
+     * Cannot capture own king (safety constraint)
+     * Cannot move enemy pieces (player's pieces)
+     * Must still get out of check if in check (critical constraint)
+   - Move notation parsing (algebraic notation: e2e4, Nf3, O-O, etc.)
+   - Conversation history tracking for context-aware responses
+   - Fallback system: random legal moves if API fails or returns invalid moves
+   - Retry mechanism for invalid move attempts
+
+3. Player Interaction Mechanics:
+   - Mouse-based input system:
+     * Left-click to select a piece
+     * Left-click on valid destination to move
+     * Visual feedback for selected piece (outline/glow effect)
+     * Valid move indicators (highlighted squares)
+   - Piece selection validation (only player's pieces, only on player's turn)
+   - Move execution with animation/instant placement
+   - Promotion choice UI when pawn reaches back rank
+
+4. Visual Feedback Mechanics:
+   - Piece highlighting system (PieceOutline component):
+     * Scale multiplier for selected pieces (1.1x)
+     * Emission/glow effect on materials
+     * Color-coded outline (yellow default)
+   - Billboard text system for labels (always faces camera)
+   - Dual camera system:
+     * White camera (white player perspective)
+     * Black camera (black player perspective)
+     * Menu camera (for start screen)
+   - UI panel system:
+     * Start menu panel
+     * Color selection panel
+     * Game over panel
+     * Promotion choice panel
+
+5. Game Flow Mechanics:
+   - Scene management:
+     * StartingScreen scene (menu and color selection)
+     * ChessGame scene (actual gameplay)
+   - Game initialization:
+     * Player color selection (White or Black)
+     * Board reset to starting position
+     * ChatGPT initialization with opposite color
+     * Turn order setup (white moves first, or ChatGPT if player is black)
+   - Game over detection:
+     * Checkmate
+     * Stalemate
+     * UI notification with restart/main menu options
+
+DYNAMICS (What emerges from the mechanics - player behavior and interactions)
+
+1. Strategic Adaptation:
+   - Players must balance traditional chess strategy with anticipation of
+     ChatGPT's potential rule-breaking moves
+   - After move 6, players must be prepared for unexpected piece spawns or
+     illegal-seeming moves
+   - Creates tension between playing "correct" chess and adapting to chaos
+
+2. Unpredictability and Surprise:
+   - The 20% chance of "free mode" creates moments of surprise and
+     unpredictability
+   - Players cannot rely solely on chess theory - must think creatively
+   - Each game feels unique due to ChatGPT's varied responses and occasional
+     rule-breaking
+
+3. Learning and Experimentation:
+   - Players learn to recognize when ChatGPT enters "free mode"
+   - Experimentation with how to respond to rule-breaking moves
+   - Understanding ChatGPT's move patterns and tendencies
+
+4. Competitive Tension:
+   - Standard chess tension (time pressure, decision-making)
+   - Additional layer: uncertainty about opponent's capabilities
+   - Satisfaction from winning against an AI that can "cheat"
+
+5. Narrative Emergence:
+   - Each game tells a story through the sequence of moves
+   - ChatGPT's creative moves create memorable moments
+   - Player's adaptation strategies become personal narratives
+
+AESTHETICS (What the player feels - emotional responses)
+
+1. Challenge:
+   - Intellectual challenge of chess strategy
+   - Additional challenge of adapting to unpredictable AI behavior
+   - Satisfaction from overcoming both traditional and chaotic obstacles
+
+2. Discovery:
+   - Discovering how ChatGPT interprets chess positions
+   - Surprise at creative or unexpected moves
+   - Exploration of the boundary between rules and rule-breaking
+
+3. Expression:
+   - Players express their chess style and creativity
+   - Adaptation strategies become personal expressions
+   - Choice of color (White/Black) as initial expression
+
+4. Fantasy:
+   - Fantasy of playing against an AI that thinks creatively
+   - Fantasy of a chess game where rules can be bent
+   - Power fantasy of overcoming an opponent with "superpowers"
+
+5. Sensation:
+   - Visual satisfaction of 3D chess pieces and board
+   - Tactile satisfaction of clicking and moving pieces
+   - Audio feedback (if implemented) for moves
+
+6. Fellowship:
+   - Sharing experiences of ChatGPT's unusual moves
+   - Community discussion of strategies against rule-breaking AI
+   - Social sharing of memorable game moments
+
+7. Narrative:
+   - Each game as a story of conflict and adaptation
+   - Emergent narratives from ChatGPT's creative moves
+   - Personal narratives of improvement and mastery
+
+================================================================================
+                        IMPLEMENTATION DETAILS
+================================================================================
+
+CONTROLS
+
+Primary Input Method: Mouse
+
+- Left Mouse Click (on piece): Select piece
+  * Only works on player's own pieces
+  * Only works on player's turn
+  * Visual feedback: piece outline/glow appears, slight scale increase
+
+- Left Mouse Click (on empty square or enemy piece): Move selected piece
+  * Only works if square is a valid move destination
+  * Captures enemy pieces automatically
+  * Triggers turn change to ChatGPT
+  * Visual feedback: piece moves to new position
+
+- UI Button Clicks:
+  * Start Menu: "Play" button, "Exit" button
+  * Color Selection: "Play as White", "Play as Black"
+  * Game Over: "Restart" button, "Main Menu" button
+  * Promotion: Queen/Rook/Bishop/Knight buttons
+
+Keyboard Support: None (mouse-only interface)
+
+VISUAL DESIGN
+
+3D Environment:
+- Chess board: 8x8 grid of alternating light/dark squares
+- Chess pieces: 3D models for all piece types (pawn, rook, knight, bishop,
+  queen, king)
+- Piece colors: White and Black (distinct materials/textures)
+- Board markers: Sphere objects at each square for raycast detection
+- Camera perspectives:
+  * White camera: Viewing from white's side (bottom of board)
+  * Black camera: Viewing from black's side (top of board)
+  * Menu camera: Overview or menu-specific angle
+
+Visual Effects:
+- Piece selection: Yellow outline/glow, 10% scale increase
+- Valid move indicators: Highlighted destination squares (if implemented)
+- Billboard text: Labels that rotate to face camera
+- UI panels: Overlay panels for menus and game state
+
+Color Scheme:
+- Board: Traditional light/dark square pattern
+- Selection: Yellow highlight (configurable)
+- UI: Standard Unity UI styling (TextMeshPro)
+
+USER INTERFACE
+
+Menu System:
+1. Start Menu:
+   - Title text: "Chess VS ChatGPT"
+   - Play button: Transitions to color selection
+   - Exit button: Closes application
+
+2. Color Selection:
+   - Prompt: "Choose Your Color"
+   - White button: Start game as White
+   - Black button: Start game as Black
+
+3. In-Game UI:
+   - Minimal HUD (if any)
+   - Promotion panel: Appears when player's pawn reaches back rank
+     * Four buttons: Queen, Rook, Bishop, Knight
+     * Player must select before game continues
+
+4. Game Over Panel:
+   - Result text: "Checkmate - You Win!" / "Checkmate - ChatGPT Wins!" /
+                 "Stalemate - Draw!"
+   - Restart button: Returns to color selection
+   - Main Menu button: Returns to start menu
+
+TECHNICAL ARCHITECTURE
+
+Core Systems:
+1. ChessBoardWithPieces.cs:
+   - Board state management (8x8 array)
+   - Move validation and execution
+   - Check/checkmate/stalemate detection
+   - Piece spawning system (for ChatGPT free mode)
+   - Raycast-based input handling
+   - Square name conversion (a1-h8 notation)
+
+2. ChatGPTChessPlayer.cs:
+   - OpenAI API integration
+   - Move generation and parsing
+   - Free mode logic (20% chance after move 6)
+   - Conversation history management
+   - Fallback move generation
+
+3. ChessUIManager.cs:
+   - Scene management
+   - UI panel control
+   - Camera switching
+   - Game flow orchestration
+   - Promotion UI handling
+
+4. ChessPieceComponent.cs:
+   - Component attached to piece GameObjects
+   - Stores piece type and color metadata
+
+5. PieceOutline.cs:
+   - Visual highlighting system
+   - Material emission control
+   - Scale animation
+
+6. BillboardText.cs:
+   - Camera-facing text labels
+   - Dynamic camera reference updates
+
+API Integration:
+- Endpoint: https://api.openai.com/v1/chat/completions
+- Model: gpt-4.1-mini (configurable)
+- Request format: JSON with conversation history
+- Response parsing: Extract move notation from text response
+- Error handling: Fallback to random legal moves
+
+GAME FLOW
+
+1. Application Start:
+   - Load StartingScreen scene
+   - Show start menu
+   - Menu camera active
+
+2. Player Clicks "Play":
+   - Hide start menu
+   - Show color selection panel
+
+3. Player Selects Color:
+   - Store color choice
+   - Load ChessGame scene
+   - Initialize board and pieces
+   - Set player color
+   - Initialize ChatGPT with opposite color
+   - Switch to appropriate camera (white/black)
+   - If player is Black: ChatGPT makes first move
+
+4. Gameplay Loop:
+   a. Player's Turn:
+      - Wait for piece selection
+      - Show valid moves
+      - Wait for destination click
+      - Validate move
+      - Execute move
+      - Check for promotion
+      - Check for game over
+      - Switch to ChatGPT's turn
+   
+   b. ChatGPT's Turn:
+      - Wait 1 second (thinking delay)
+      - Build chess prompt with current position
+      - Determine if free mode (20% chance after move 6)
+      - Send API request
+      - Parse response
+      - Validate/execute move
+      - Check for game over
+      - Switch to player's turn
+
+5. Game Over:
+   - Detect checkmate/stalemate
+   - Show game over panel
+   - Wait for restart/main menu selection
+
+6. Restart:
+   - Reset board to starting position
+   - Clear move history
+   - Reset ChatGPT state
+   - Return to color selection (or reload scene)
+
+SPECIAL RULES AND CONSTRAINTS
+
+ChatGPT Constraints (Always Enforced):
+1. Cannot capture its own king
+2. Cannot move enemy pieces (player's pieces)
+3. Must get out of check if in check (cannot ignore check)
+4. Cannot move king into check (king safety)
+
+ChatGPT Free Mode (20% chance after move 6):
+- Can move pieces to any square (even if illegal)
+- Can spawn new pieces at empty squares
+- Still subject to constraints above
+- Can break piece movement rules
+- Can create multiple pieces of same type
+
+Player Constraints:
+- Must follow all chess rules always
+- Cannot break rules
+- Standard move validation applies
+
+Move Notation:
+- Standard algebraic: e2e4, Nf3, O-O, O-O-O
+- Promotion: e7e8Q, e7e8=Q
+- ChatGPT can use various formats, system parses flexibly
+
+================================================================================
+                        DESIGN PHILOSOPHY
+================================================================================
+
+Core Concept:
+Chess VS ChatGPT explores the intersection of traditional strategy games and
+modern AI capabilities. By allowing ChatGPT to occasionally break chess rules,
+the game creates a unique experience that cannot be replicated in standard
+chess. This design choice serves multiple purposes:
+
+1. Showcases AI creativity and unpredictability
+2. Creates memorable, shareable moments
+3. Challenges players to think beyond standard chess theory
+4. Demonstrates the flexibility of game rules as design choices
+
+Target Audience:
+- Chess enthusiasts looking for a novel experience
+- Players interested in AI-human interaction
+- Gamers who enjoy experimental game mechanics
+- Casual players who want to try something different
+
+Design Goals:
+1. Maintain chess as the core experience (first 6 moves are pure chess)
+2. Introduce controlled chaos (20% free mode, not 100%)
+3. Ensure player always has agency (player never breaks rules)
+4. Create moments of surprise and delight
+5. Balance challenge and accessibility
+
+Future Expansion Possibilities:
+- Difficulty settings (adjust free mode probability)
+- Custom rule sets
+- Move history and replay system
+- Statistics tracking
+- Multiplayer mode (two humans, ChatGPT as referee/commentator)
+- Tournament mode
+- Custom board themes and piece sets
